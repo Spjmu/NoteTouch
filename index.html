@@ -125,7 +125,7 @@
   </div>
   <div id="stage"><canvas id="cv"></canvas>
     <div id="voiceUI" hidden>
-      <div id="selBar" hidden><button id="punchBtn">Regrabar este pedazo</button></div>
+      <div id="selBar" hidden><button id="punchBtn">Regrabar este pedazo</button><button id="selDelBtn">Borrar</button></div>
       <button id="recBtn" aria-label="Grabar voz"><i></i><span>Grabar</span></button>
       <div id="micMsg" hidden></div>
     </div>
@@ -1188,7 +1188,7 @@ function updatePlayIcon() {
 function updateButtons() {
   const empty = notes.length === 0;
   document.getElementById('undo').disabled = history.length === 0;
-  document.getElementById('clear').disabled = !(sel || (isVoice(cur) && voiceSel));
+  document.getElementById('clear').disabled = !(sel || (isVoice(cur) && (voiceSel || selClip)));
   document.getElementById('clearAll').disabled = isVoice(cur) ? !clips.length : !notes.some(n => n.layer === cur);
   updateVoiceUI();
   scheduleSave();
@@ -1216,12 +1216,13 @@ document.getElementById('undo').onclick = () => {
   const h = history.pop();
   notes = JSON.parse(h.n).map(n => ({ ...n, rec: false }));
   clips = h.c.slice();
-  sel = null; voiceSel = null; updateButtons();
+  sel = null; voiceSel = null; selClip = null; updateButtons();
 };
 // Borrar: elimina la nota seleccionada (se puede recuperar con Deshacer)
 document.getElementById('clear').onclick = () => {
   if (running) return;
   if (isVoice(cur) && voiceSel) { pushHistory(); deleteRange(voiceSel.a, voiceSel.b); voiceSel = null; updateButtons(); return; }
+  if (isVoice(cur) && selClip) { pushHistory(); stopClips(); clips = clips.filter(c => c !== selClip); selClip = null; updateButtons(); return; }
   if (!sel) return;
   pushHistory();
   notes.splice(notes.indexOf(sel), 1);
@@ -1641,26 +1642,70 @@ function stopClips() {
   clipSrc.clear();
 }
 
-// Seleccionar un tramo arrastrando sobre la onda; la franja de abajo sirve para moverse en el tiempo
+// Editar la voz, igual que las notas:
+// - tocar una toma la selecciona (con agarraderas en sus extremos);
+// - arrastrar una agarradera recorta el inicio o el final; arrastrar la toma la mueve en el tiempo;
+// - arrastrar sobre la onda (fuera de una toma seleccionada) marca un tramo para borrarlo o regrabarlo;
+// - la franja de abajo sirve para moverse en el tiempo.
+let selClip = null;
+const tAtX = e => Math.max(0, songTime + (e.clientX - stage.getBoundingClientRect().left - W * PLAYHEAD) / PPS);
+const clipAt = t => { for (let i = clips.length - 1; i >= 0; i--) { const c = clips[i]; if (t >= c.t && t <= c.t + c.dur) return c; } return null; };
+function replaceClip(oldC, newC) { const i = clips.indexOf(oldC); if (i >= 0) clips[i] = newC; return newC; }
 function voiceDown(e) {
   if (running) return;
-  const y = localY(e);
-  if (y > H - RULER) { voiceSel = null; scrolls.set(e.pointerId, { x0: e.clientX, t0: songTime }); updateButtons(); return; }
-  const r = stage.getBoundingClientRect();
-  const t = Math.max(0, songTime + (e.clientX - r.left - W * PLAYHEAD) / PPS);
-  voiceDrag.set(e.pointerId, { t0: t });
-  voiceSel = { a: t, b: t };
-  updateButtons();
+  const y = localY(e), x = e.clientX - stage.getBoundingClientRect().left;
+  if (y > H - RULER) { voiceSel = null; selClip = null; scrolls.set(e.pointerId, { x0: e.clientX, t0: songTime }); updateButtons(); return; }
+  const t = tAtX(e);
+  if (selClip) {
+    const xs = xOf(selClip.t), xe = xOf(selClip.t + selClip.dur);
+    const kind = Math.abs(x - xs) <= HANDLE ? 'start' : Math.abs(x - xe) <= HANDLE ? 'end' : (x > xs && x < xe) ? 'move' : null;
+    if (kind) {
+      voiceDrag.set(e.pointerId, { kind, x0: e.clientX, orig: selClip, before: clips.slice(), changed: false });
+      return;
+    }
+  }
+  // tocar una toma la selecciona; si en cambio arrastras, marcas un tramo
+  voiceDrag.set(e.pointerId, { kind: 'maybe', x0: e.clientX, t0: t, clip: clipAt(t) });
 }
 function voiceMove(e) {
-  const d = voiceDrag.get(e.pointerId), r = stage.getBoundingClientRect();
-  const t = Math.max(0, songTime + (e.clientX - r.left - W * PLAYHEAD) / PPS);
-  voiceSel = { a: Math.min(d.t0, t), b: Math.max(d.t0, t) };
+  const d = voiceDrag.get(e.pointerId);
+  const dt = (e.clientX - d.x0) / PPS;
+  if (d.kind === 'maybe') {
+    if (Math.abs(e.clientX - d.x0) < 8) return;
+    d.kind = 'range'; selClip = null;
+  }
+  if (d.kind === 'range') {
+    const t = tAtX(e);
+    voiceSel = { a: Math.min(d.t0, t), b: Math.max(d.t0, t) };
+    updateButtons();
+    return;
+  }
+  const o = d.orig;
+  let n;
+  if (d.kind === 'move') n = { ...o, t: Math.max(0, o.t + dt) };
+  else if (d.kind === 'start') {
+    // el inicio no puede ir antes de donde empieza la grabación
+    const delta = Math.max(-o.off, Math.min(o.dur - 0.05, dt));
+    n = { ...o, t: o.t + delta, off: o.off + delta, dur: o.dur - delta };
+  } else {
+    n = { ...o, dur: Math.max(0.05, Math.min(o.buf.duration - o.off, o.dur + dt)) };
+  }
+  stopClips();
+  selClip = replaceClip(selClip, n);
+  d.changed = true;
 }
 function voiceUp(id) {
-  if (!voiceDrag.has(id)) return;
+  const d = voiceDrag.get(id);
+  if (!d) return;
   voiceDrag.delete(id);
-  if (voiceSel && voiceSel.b - voiceSel.a < 0.08) voiceSel = null; // un toque corto quita la selección
+  if (d.kind === 'maybe') {
+    // fue un toque: selecciona la toma tocada (o quita la selección)
+    voiceSel = null; selClip = d.clip;
+  } else if (d.kind === 'range') {
+    if (voiceSel && voiceSel.b - voiceSel.a < 0.08) voiceSel = null;
+  } else if (d.changed) {
+    history.push({ n: snapshot(), c: d.before }); if (history.length > 100) history.shift();
+  }
   updateButtons();
 }
 
@@ -1671,7 +1716,9 @@ function updateVoiceUI() {
   btn.classList.toggle('on', !!rec);
   btn.querySelector('span').textContent = rec ? 'Detener' : 'Grabar';
   document.getElementById('selBar').hidden = !(on && voiceSel && !rec && !running);
+  if (!on) selClip = null;
 }
+document.getElementById('selDelBtn').onclick = () => document.getElementById('clear').click();
 document.getElementById('recBtn').onclick = () => { if (!ac) return; if (rec) stopRun(); else startRecording(false); };
 document.getElementById('punchBtn').onclick = () => { if (ac && voiceSel) startRecording(true); };
 
@@ -1711,6 +1758,14 @@ function drawVoice(px) {
   // tramo a regrabar mientras se graba
   if (rec && rec.punch) {
     g.fillStyle = 'rgba(255,77,94,0.10)'; g.fillRect(xOf(rec.from), 0, (rec.to - rec.from) * PPS, H - (on ? RULER : 0));
+  }
+  if (on && selClip && clips.includes(selClip)) {
+    const a = xOf(selClip.t), b = xOf(selClip.t + selClip.dur), top = cy - scale / 2 - 8, hgt = scale + 16;
+    g.strokeStyle = L.color; g.lineWidth = 2; g.globalAlpha = 0.9;
+    g.strokeRect(a, top, b - a, hgt);
+    g.fillStyle = '#ffffff'; g.shadowColor = L.color; g.shadowBlur = 12;
+    for (const x of [a, b]) { g.beginPath(); g.roundRect ? g.roundRect(x - 4, cy - 34, 8, 68, 4) : g.rect(x - 4, cy - 34, 8, 68); g.fill(); }
+    g.shadowBlur = 0; g.globalAlpha = 1;
   }
   if (on && voiceSel) {
     const a = xOf(voiceSel.a), b = xOf(voiceSel.b);
