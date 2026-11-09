@@ -773,7 +773,9 @@ const WOBBLE = 0.13;     // vibración que se ignora (en franjas)
 const PAUSE_MIN = 0.12;  // desde cuánto tiempo quieto cuenta como pausa (s)
 const STILL_SPEED = 0.45;
 const PAUSE_DRIFT = 0.3;
-const PEAK_MIN = 0.14, PEAK_FULL = 0.35; // desvíos menores son temblor; mayores, un gesto a propósito  // si en una "pausa" el dedo avanzó más que esto, era un deslizamiento lento // por debajo de esta velocidad (franjas/s, sin temblor) el dedo está quieto
+const GESTURE_BIG = 1.8;    // un pico de casi dos notas o más siempre se conserva
+const GESTURE_MIN = 0.75;   // uno de casi una nota se conserva si el dedo se detuvo un instante en él
+const GESTURE_DWELL = 0.12; // segundos que debe quedarse cerca de esa otra nota  // si en una "pausa" el dedo avanzó más que esto, era un deslizamiento lento // por debajo de esta velocidad (franjas/s, sin temblor) el dedo está quieto
 const SNAP_NOTE = 0.5;   // toda pausa cae en la nota más cercana (los deslizamientos quedan libres)
 const MOVE_MIN = 0.06;   // cuánto debe avanzar el dedo (en promedio, en ~0.4 s) para contar como deslizamiento
 const LAND_WAIT = 180;   // ms quieto antes de empezar a acomodarse a la nota
@@ -837,23 +839,53 @@ function denoisePath(src, end) {
   if (runs[runs.length - 1].j < N - 1) runs.push({ k: N - 1, j: N - 1, v: XS[N - 1] });
   const Z = XS.slice();
   for (const r of runs) for (let k = r.k; k <= r.j; k++) Z[k] = r.v;
-  // 3) los deslizamientos conservan su forma y su tiempo, ajustados para unir bien las pausas
+  // 3) los deslizamientos conservan su tiempo, pero van derecho de una pausa a la siguiente:
+  //    los rebotes al llegar (pasarse un poco y volver) se quitan
+  const base = Z.slice();
   for (let r = 0; r + 1 < runs.length; r++) {
     const A = runs[r], B = runs[r + 1];
-    const ya = XS[A.j], yb = XS[B.k], d = yb - ya;
-    const lo = Math.min(A.v, B.v), hi = Math.max(A.v, B.v);
-    for (let k = A.j + 1; k < B.k; k++) {
-      // la base suave del deslizamiento...
-      let z = Math.abs(d) > 1e-6 && Math.abs(d) > 0.2 ? A.v + (XS[k] - ya) / d * (B.v - A.v) : XS[k] + (A.v - ya) + ((B.v - yb) - (A.v - ya)) * (k - A.j) / (B.k - A.j);
-      // ...más los movimientos grandes del dedo que el suavizado había aplanado (un pico rápido,
-      // una subida y bajada): esos son intención, no temblor
-      const r = X[k] - XS[k], a = Math.abs(r);
-      const w = a <= PEAK_MIN ? 0 : a >= PEAK_FULL ? 1 : ((a - PEAK_MIN) / (PEAK_FULL - PEAK_MIN)) ** 2 * (3 - 2 * (a - PEAK_MIN) / (PEAK_FULL - PEAK_MIN));
-      z += r * w;
-      // no se pasa de las pausas que une, salvo donde el dedo de verdad fue más allá
-      Z[k] = Math.max(Math.min(lo, X[k]), Math.min(Math.max(hi, X[k]), z));
+    const ya = XS[A.j], yb = XS[B.k], d = yb - ya, dir = Math.sign(B.v - A.v);
+    // primero la forma del deslizamiento tal como la hizo el dedo (sin temblor)
+    const zr = [];
+    for (let k = A.j + 1; k < B.k; k++)
+      zr.push(!dir ? A.v : Math.abs(d) > 0.2 ? A.v + (XS[k] - ya) / d * (B.v - A.v) : A.v + (B.v - A.v) * (k - A.j) / (B.k - A.j));
+    // velocidad típica de este deslizamiento, para notar cuándo se frena al llegar
+    const sp = []; for (let q = 1; q < zr.length; q++) { const v = (zr[q] - zr[q - 1]) * dir; if (v > 0) sp.push(v); }
+    sp.sort((x, y) => x - y);
+    const vTyp = sp.length ? sp[sp.length >> 1] : 0;
+    let prev = A.v, arrived = false;
+    for (let q = 0; q < zr.length; q++) {
+      const k = A.j + 1 + q;
+      let z = zr[q];
+      if (dir) {
+        // si cerca de la nota de llegada se frena mucho o se devuelve, es un rebote: ya llegó
+        if ((z - prev) * dir < 0.3 * vTyp && Math.abs(B.v - prev) < 0.7) arrived = true;
+        if (arrived) z = prev + (B.v - prev) * 0.22; // termina de llegar suave
+        z = dir > 0 ? Math.max(prev, Math.min(B.v, z)) : Math.min(prev, Math.max(B.v, z)); // siempre avanzando
+      }
+      base[k] = z; prev = z;
     }
   }
+  // 4) gestos a propósito: lo que el dedo hizo aparte del camino. Se conservan los saltos grandes
+  //    (un pico a una nota alta) y los que se detienen un instante en otra nota; los rebotes
+  //    rápidos y pequeños, no
+  const R = X.map((x, k) => x - base[k]);
+  const moving = k => !runs.some(r => k >= r.k && k <= r.j);
+  for (let k = 0; k < N;) {
+    if (!moving(k) || Math.abs(R[k]) <= 0.3) { k++; continue; }
+    let j = k; const sg = Math.sign(R[k]);
+    while (j + 1 < N && moving(j + 1) && Math.sign(R[j + 1]) === sg && Math.abs(R[j + 1]) > 0.3) j++;
+    let pk = 0; for (let q = k; q <= j; q++) pk = Math.max(pk, Math.abs(R[q]));
+    let dwell = 0; for (let q = k; q <= j; q++) if (Math.abs(R[q]) >= pk - 0.3) dwell += dt;
+    const keep = pk >= GESTURE_BIG || (pk >= GESTURE_MIN && dwell >= GESTURE_DWELL);
+    if (keep) {
+      // se extiende un poco a los lados para que el gesto entre y salga suave
+      const k0 = Math.max(0, k - 6), j0 = Math.min(N - 1, j + 6);
+      for (let q = k0; q <= j0; q++) if (moving(q) && Math.sign(R[q]) === sg) base[q] += R[q];
+    }
+    k = j + 1;
+  }
+  for (let k = 0; k < N; k++) Z[k] = base[k];
   // 4) pulido corto para redondear la entrada y salida de cada pausa
   for (let pass = 0; pass < 3; pass++) {
     const c = Z.slice();
