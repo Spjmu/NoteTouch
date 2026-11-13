@@ -42,6 +42,11 @@
   #confirm[hidden] { display:none; }
   #toast { position:fixed; left:50%; top:calc(56px + env(safe-area-inset-top)); transform:translateX(-50%); z-index:12; background:rgba(18,21,42,.95); border:1px solid var(--line); color:var(--txt); font-size:13px; padding:9px 14px; border-radius:18px; pointer-events:none; white-space:nowrap; }
   #toast[hidden] { display:none; }
+  #resume { position:fixed; inset:0; z-index:30; background:rgba(11,13,23,.94); display:flex; flex-direction:column; align-items:center; justify-content:center; gap:16px; text-align:center; cursor:pointer; }
+  #resume[hidden] { display:none; }
+  #resume .dot { width:72px; height:72px; border-radius:50%; background:var(--accent); box-shadow:0 0 40px var(--accent); animation:pulse 1.6s ease-in-out infinite; }
+  #resume h1 { font-size:24px; }
+  #resume p { color:var(--dim); font-size:14px; }
   #video { position:fixed; inset:0; z-index:16; background:rgba(5,6,12,.7); display:flex; align-items:flex-end; }
   #video[hidden], #video [hidden] { display:none !important; }
   #video .sheet { width:100%; max-height:92vh; overflow:auto; background:var(--bar); border-top:1px solid var(--line); border-radius:18px 18px 0 0; padding:14px 16px calc(18px + env(safe-area-inset-bottom)); }
@@ -160,6 +165,12 @@
 
 <div id="toast" hidden></div>
 
+<div id="resume" hidden>
+  <div class="dot"></div>
+  <h1>Toca para continuar</h1>
+  <p>Tu canción sigue aquí.</p>
+</div>
+
 <div id="video" hidden>
   <div class="sheet">
     <div class="head"><h2 id="vTitle">Video para compartir</h2><button id="vClose">Cerrar</button></div>
@@ -199,7 +210,7 @@
   <div class="dot"></div>
   <h1>Toca para empezar</h1>
   <p>Toca una franja para sonar una nota, mantén para alargarla y desliza para cambiar de nota.<br><br><strong>En iPhone:</strong> revisa que el interruptor de silencio esté apagado.</p>
-  <small style="color:var(--dim);opacity:.6;font-size:10px;position:absolute;bottom:calc(14px + env(safe-area-inset-bottom))">Cello y bajo: FluidR3 GM · Piano: Salamander Grand Piano (A. Holm) · CC BY 3.0</small>
+  <small style="color:var(--dim);opacity:.6;font-size:10px;position:absolute;bottom:calc(14px + env(safe-area-inset-bottom))">v13 · Cello y bajo: FluidR3 GM · Piano: Salamander Grand Piano (A. Holm) · CC BY 3.0</small>
 </div>
 
 <script>
@@ -383,10 +394,12 @@ function initAudio() {
   // Desbloqueo de audio en iOS
   unlockAudio();
   // si el sistema pausa el sonido (llamada, otra app, minimizar), se detiene la canción limpio
-  ac.onstatechange = () => { if (ac.state !== 'running' && running) stopAll(); };
-  loadSamples(BASS_SAMPLES, bassBuf);
-  loadSamples(PIANO_SAMPLES, pianoBuf);
-  loadSamples(CELLO_SAMPLES, celloBuf);
+  const me = ac;
+  ac.onstatechange = () => { if (me === ac && ac.state !== 'running' && running) stopAll(); };
+  // las grabaciones de los instrumentos se cargan una sola vez (sirven también para un sonido nuevo)
+  if (!Object.keys(bassBuf).length) loadSamples(BASS_SAMPLES, bassBuf);
+  if (!Object.keys(pianoBuf).length) loadSamples(PIANO_SAMPLES, pianoBuf);
+  if (!Object.keys(celloBuf).length) loadSamples(CELLO_SAMPLES, celloBuf);
 }
 // Respuesta de un cuarto: ruido que se apaga, un poco distinto en cada oído para que suene amplio
 const REVERB = 0.32;
@@ -2011,19 +2024,24 @@ function toast(txt) {
   clearTimeout(toast.timer); toast.timer = setTimeout(() => { t.hidden = true; }, 2800);
 }
 // al salir o pasar a otra app, se guarda de inmediato
+let wentAway = false;
 document.addEventListener('visibilitychange', () => {
   if (!ac) return;
   if (document.hidden) {
     // al minimizar: se detiene todo de forma ordenada y se guarda
+    wentAway = true;
     stopAll();
     if (!restoring) { clearTimeout(saveTimer); saveSong(); }
-  } else wakeAudio();
+  } else if (wentAway) askToResume();
 });
-window.addEventListener('pageshow', () => { if (ac) wakeAudio(); });
+window.addEventListener('pagehide', () => { if (ac) { wentAway = true; stopAll(); } });
+window.addEventListener('pageshow', () => { if (ac && wentAway) askToResume(); });
 
 // ---------- Volver de segundo plano ----------
-// En el iPhone, al minimizar Safari el sonido queda pausado ("suspendido" o "interrumpido") y solo
-// vuelve con un toque de la persona. Por eso cualquier toque reactiva el sonido antes de hacer nada.
+// En el iPhone, al minimizar Safari el sistema le quita el sonido a la página y a veces no lo
+// devuelve aunque la app lo pida (el sonido queda "vivo" pero mudo). Lo único confiable es crear
+// el motor de sonido de nuevo, y Safari solo lo deja hacer con un toque. Por eso, al volver, se
+// muestra "Toca para continuar" y ese toque arma el sonido desde cero (la canción no se toca).
 function unlockAudio() {
   try {
     const buf = ac.createBuffer(1, 1, 22050);
@@ -2031,12 +2049,23 @@ function unlockAudio() {
   } catch (e) {}
   if (ac.state !== 'running' && ac.state !== 'closed') ac.resume().catch(() => {});
 }
-function wakeAudio() {
-  if (!ac || ac.state === 'running') return;
-  unlockAudio();
-  // si aún no vuelve (Safari exige un toque), se avisa
-  setTimeout(() => { if (ac.state !== 'running') toast('Toca la pantalla para reactivar el sonido'); }, 400);
+function askToResume() {
+  wentAway = false;
+  stopAll();
+  document.getElementById('resume').hidden = false;
 }
+function rebuildAudio() {
+  const old = ac;
+  try { if (mic) { mic.stream.getTracks().forEach(t => t.stop()); mic.node.disconnect(); } } catch (e) {}
+  mic = null; helloBus = null; helloVoice = null;
+  clipSrc.clear(); playing.clear(); hitsDone.clear();
+  initAudio();
+  try { old.close(); } catch (e) {}
+}
+document.getElementById('resume').addEventListener('click', () => {
+  rebuildAudio();
+  document.getElementById('resume').hidden = true;
+});
 // se ejecuta antes que cualquier otro toque, para que play, notas y botones ya encuentren el sonido activo
 ['pointerdown', 'touchend', 'click'].forEach(ev => document.addEventListener(ev, () => { if (ac && ac.state !== 'running') unlockAudio(); }, true));
 function stopAll() {
