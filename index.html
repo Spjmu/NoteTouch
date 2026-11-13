@@ -954,6 +954,30 @@ function bandAt(n, t) {
 // ---------- Toques ----------
 function localY(e) { return e.clientY - stage.getBoundingClientRect().top; }
 
+// ---------- Teclado de prueba ----------
+// Tocar la columna de la izquierda hace sonar la nota de esa franja (con el instrumento de la
+// capa) para escucharla antes de grabarla. Mientras mantienes, suena; si deslizas, cambia de nota.
+const KEY_W = 48;
+const keys = new Map(); // pointerId -> { voice, b }
+function keyDown(e) {
+  const b = bandFromY(localY(e), null);
+  if (isDrum(cur)) { drumHit(b); kick[cur] = 1; laneFlash[b] = 1; keys.set(e.pointerId, { voice: null, b }); return; }
+  keys.set(e.pointerId, { voice: makeVoice(cur, midiOf(b, cur)), b });
+}
+function keyMove(e) {
+  const k = keys.get(e.pointerId), b = bandFromY(localY(e), k.b);
+  if (b === k.b) return;
+  k.b = b;
+  if (isDrum(cur)) { drumHit(b); laneFlash[b] = 1; return; }
+  k.voice.set(midiOf(b, cur));
+}
+function keyUp(id) {
+  const k = keys.get(id);
+  if (!k) return;
+  keys.delete(id);
+  if (k.voice) k.voice.stop();
+}
+
 // ---------- Historial (Deshacer) ----------
 const snapshot = () => JSON.stringify(notes.filter(n => !n.rec).map(({ layer, pts, end, hit }) => ({ layer, pts, end, hit })));
 function pushHistory() { history.push({ n: snapshot(), c: clips.slice() }); if (history.length > 100) history.shift(); }
@@ -1038,6 +1062,8 @@ stage.addEventListener('pointerdown', e => {
   e.preventDefault();
   stage.setPointerCapture(e.pointerId);
   if (isVoice(cur)) { voiceDown(e); return; }
+  // Teclado de prueba: la columna de los nombres de las notas suena sin grabar nada
+  if (e.clientX - stage.getBoundingClientRect().left < KEY_W) { keyDown(e); return; }
   // En pausa: tocar una nota la selecciona para moverla o estirarla
   if (!running) {
     if (edits.size) return;
@@ -1079,6 +1105,7 @@ function startNote(id, y) {
 
 stage.addEventListener('pointermove', e => {
   if (voiceDrag.has(e.pointerId)) { voiceMove(e); return; }
+  if (keys.has(e.pointerId)) { keyMove(e); return; }
   const ed = edits.get(e.pointerId);
   if (ed) { moveEdit(e, ed); return; }
   const sc = scrolls.get(e.pointerId);
@@ -1175,8 +1202,8 @@ function flushPending(id) {
   clearTimeout(pd.timer); pending.delete(id);
   startNote(id, pd.y0); // toque rápido sin arrastrar: nota corta
 }
-stage.addEventListener('pointerup', e => { voiceUp(e.pointerId); flushPending(e.pointerId); scrolls.delete(e.pointerId); endEdit(e.pointerId); endTouch(e.pointerId); });
-stage.addEventListener('pointercancel', e => { voiceUp(e.pointerId); const pd = pending.get(e.pointerId); if (pd) { clearTimeout(pd.timer); pending.delete(e.pointerId); } scrolls.delete(e.pointerId); endEdit(e.pointerId); endTouch(e.pointerId); });
+stage.addEventListener('pointerup', e => { keyUp(e.pointerId); voiceUp(e.pointerId); flushPending(e.pointerId); scrolls.delete(e.pointerId); endEdit(e.pointerId); endTouch(e.pointerId); });
+stage.addEventListener('pointercancel', e => { keyUp(e.pointerId); voiceUp(e.pointerId); const pd = pending.get(e.pointerId); if (pd) { clearTimeout(pd.timer); pending.delete(e.pointerId); } scrolls.delete(e.pointerId); endEdit(e.pointerId); endTouch(e.pointerId); });
 document.addEventListener('touchmove', e => e.preventDefault(), { passive: false });
 
 // ---------- Botones ----------
@@ -1433,6 +1460,16 @@ function draw() {
     for (let i = 0; i < COUNT_IN; i++) {
       g.fillStyle = i <= k ? '#ffffff' : 'rgba(255,255,255,0.18)';
       g.beginPath(); g.arc(px + 22 + i * 22, 22, i === 0 ? 7 : 5.5, 0, Math.PI * 2); g.fill();
+    }
+  }
+
+  // Teclado de prueba: columna izquierda, con la tecla presionada iluminada
+  if (!exporting && !isVoice(cur)) {
+    g.fillStyle = 'rgba(255,255,255,0.035)'; g.fillRect(0, 0, KEY_W, H);
+    g.fillStyle = 'rgba(255,255,255,0.08)'; g.fillRect(KEY_W, 0, 1, H);
+    for (const k of keys.values()) {
+      g.fillStyle = LAYERS[cur].color; g.globalAlpha = 0.35;
+      g.fillRect(0, k.b * bandH(), KEY_W, bandH()); g.globalAlpha = 1;
     }
   }
 
