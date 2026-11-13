@@ -381,9 +381,9 @@ function initAudio() {
   const wet = ac.createGain(); wet.gain.value = REVERB;
   master.connect(hp); hp.connect(rev); rev.connect(wet); wet.connect(comp);
   // Desbloqueo de audio en iOS
-  const buf = ac.createBuffer(1, 1, 22050);
-  const src = ac.createBufferSource(); src.buffer = buf; src.connect(ac.destination); src.start(0);
-  ac.resume();
+  unlockAudio();
+  // si el sistema pausa el sonido (llamada, otra app, minimizar), se detiene la canción limpio
+  ac.onstatechange = () => { if (ac.state !== 'running' && running) stopAll(); };
   loadSamples(BASS_SAMPLES, bassBuf);
   loadSamples(PIANO_SAMPLES, pianoBuf);
   loadSamples(CELLO_SAMPLES, celloBuf);
@@ -2011,7 +2011,45 @@ function toast(txt) {
   clearTimeout(toast.timer); toast.timer = setTimeout(() => { t.hidden = true; }, 2800);
 }
 // al salir o pasar a otra app, se guarda de inmediato
-document.addEventListener('visibilitychange', () => { if (document.hidden && !restoring && ac) { clearTimeout(saveTimer); saveSong(); } });
+document.addEventListener('visibilitychange', () => {
+  if (!ac) return;
+  if (document.hidden) {
+    // al minimizar: se detiene todo de forma ordenada y se guarda
+    stopAll();
+    if (!restoring) { clearTimeout(saveTimer); saveSong(); }
+  } else wakeAudio();
+});
+window.addEventListener('pageshow', () => { if (ac) wakeAudio(); });
+
+// ---------- Volver de segundo plano ----------
+// En el iPhone, al minimizar Safari el sonido queda pausado ("suspendido" o "interrumpido") y solo
+// vuelve con un toque de la persona. Por eso cualquier toque reactiva el sonido antes de hacer nada.
+function unlockAudio() {
+  try {
+    const buf = ac.createBuffer(1, 1, 22050);
+    const src = ac.createBufferSource(); src.buffer = buf; src.connect(ac.destination); src.start(0);
+  } catch (e) {}
+  if (ac.state !== 'running' && ac.state !== 'closed') ac.resume().catch(() => {});
+}
+function wakeAudio() {
+  if (!ac || ac.state === 'running') return;
+  unlockAudio();
+  // si aún no vuelve (Safari exige un toque), se avisa
+  setTimeout(() => { if (ac.state !== 'running') toast('Toca la pantalla para reactivar el sonido'); }, 400);
+}
+// se ejecuta antes que cualquier otro toque, para que play, notas y botones ya encuentren el sonido activo
+['pointerdown', 'touchend', 'click'].forEach(ev => document.addEventListener(ev, () => { if (ac && ac.state !== 'running') unlockAudio(); }, true));
+function stopAll() {
+  if (vState) cancelVideo();
+  if (running) stopRun();
+  for (const [id] of live) endTouch(id);
+  for (const [id] of keys) keyUp(id);
+  pending.forEach(pd => clearTimeout(pd.timer)); pending.clear();
+  edits.clear(); scrolls.clear(); voiceDrag.clear();
+  stopPlaying();
+  // el micrófono se apaga al ir a segundo plano: se vuelve a pedir en la próxima grabación
+  if (mic && mic.stream.getAudioTracks().some(t => t.readyState === 'ended')) { try { mic.node.disconnect(); } catch (e) {} mic = null; }
+}
 
 // ---------- Video para compartir ----------
 // Graba en tiempo real un video vertical (para TikTok, Reels, WhatsApp) con el lienzo animado:
