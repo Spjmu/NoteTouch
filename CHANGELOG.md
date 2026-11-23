@@ -1,5 +1,11 @@
 # Versiones de NoteTouch
 
+## v0.3.0 — canciones de internet y carrusel (23 de noviembre de 2026)
+
+- Nuevas canciones, virales y de dominio público: Wellerman (el shanty de TikTok), Ievan Polkka (la del puerro que gira) y El rey de la montaña de Grieg, que se acelera en cada vuelta.
+- Cada canción trae su propia escala y su propio tempo (incluye sostenidos y bemoles).
+- Elegir canción ahora es un carrusel: la del centro suena en demo; tocarla abre la elección de instrumento.
+
 ## v0.2.0 — modo jugar (23 de noviembre de 2026)
 
 - Pantalla de inicio con dos caminos: Jugar y Crear.
