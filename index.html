@@ -352,7 +352,7 @@
   <div class="dot"></div>
   <h1>Toca para empezar</h1>
   <p>Toca una franja para sonar una nota, mantén para alargarla y desliza para cambiar de nota.<br><br><strong>En iPhone:</strong> revisa que el interruptor de silencio esté apagado.</p>
-  <small style="color:var(--dim);opacity:.6;font-size:10px;position:absolute;bottom:calc(14px + env(safe-area-inset-bottom))">v17 · Cello y bajo: FluidR3 GM · Piano: Salamander Grand Piano (A. Holm) · CC BY 3.0</small>
+  <small style="color:var(--dim);opacity:.6;font-size:10px;position:absolute;bottom:calc(14px + env(safe-area-inset-bottom))">v18 · Cello y bajo: FluidR3 GM · Piano: Salamander Grand Piano (A. Holm) · CC BY 3.0</small>
 </div>
 
 <script>
@@ -2706,7 +2706,7 @@ const KING = {
   cello: [...Array(8)].map((_, k) => { const s = k * 16; return { pts: [['C5', s], ['C5', s + 3.2], ['B4', s + 4], ['B4', s + 5.4], ['Bb4', s + 6], ['Bb4', s + 7.4], ['A4', s + 8], ['A4', s + 11.2], ['G4', s + 12]], end: s + 15.6 }; }),
   drums: [...Array(32)].flatMap((_, k) => { const s = 4 * k; return [[k % 8 === 0 ? CRASH : KICK, s], [SNARE, s + 1], [KICK, s + 2], [SNARE, s + 3]]; }).concat([[CRASH, 128]]),
 };
-const BUILTIN = [WELL, IEVA, KING].map(d => ({ id: d.id, title: d.title, credit: d.credit, tag: d.tag, colors: d.colors, art: d.art, def: d }));
+const BUILTIN = [IEVA, KING].map(d => ({ id: d.id, title: d.title, credit: d.credit, tag: d.tag, colors: d.colors, art: d.art, def: d }));
 function levelFrom(lv) {
   if (!lv.notes) lv.notes = levelNotes(lv);
   if (!lv.beats) { // canciones hechas en Crear: tempo fijo y escala pentatónica
