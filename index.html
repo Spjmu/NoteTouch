@@ -352,7 +352,7 @@
   <div class="dot"></div>
   <h1>Toca para empezar</h1>
   <p>Toca una franja para sonar una nota, mantén para alargarla y desliza para cambiar de nota.<br><br><strong>En iPhone:</strong> revisa que el interruptor de silencio esté apagado.</p>
-  <small style="color:var(--dim);opacity:.6;font-size:10px;position:absolute;bottom:calc(14px + env(safe-area-inset-bottom))">v18 · Cello y bajo: FluidR3 GM · Piano: Salamander Grand Piano (A. Holm) · CC BY 3.0</small>
+  <small style="color:var(--dim);opacity:.6;font-size:10px;position:absolute;bottom:calc(14px + env(safe-area-inset-bottom))">v19 · Cello y bajo: FluidR3 GM · Piano: Salamander Grand Piano (A. Holm) · CC BY 3.0</small>
 </div>
 
 <script>
@@ -2641,6 +2641,21 @@ function celloLine(targets, start, barLen) {
     return { pts, end: s + barLen - 0.1 };
   });
 }
+// cello más movido: recorre una lista de notas (una por paso) deslizándose entre ellas.
+// Cada grupo de pasos es un solo gesto: tocas, sigues la curva sin soltar y vuelves a tocar.
+function celloRun(pitches, start, step, perGesture) {
+  const out = [];
+  for (let g0 = 0; g0 < pitches.length; g0 += perGesture) {
+    const grp = pitches.slice(g0, g0 + perGesture), s0 = start + g0 * step, pts = [];
+    grp.forEach((p, i) => {
+      const s = s0 + i * step;
+      pts.push([p, s]);
+      if (i + 1 < grp.length && grp[i + 1] !== p) pts.push([p, s + step * 0.5]);
+    });
+    out.push({ pts, end: s0 + grp.length * step - step * 0.12 });
+  }
+  return out;
+}
 const KICK = 3, SNARE = 2, HAT = 1, CRASH = 0;
 
 // --- Wellerman: canción marinera de Nueva Zelanda (c. 1860), viral en TikTok en 2021 ---
@@ -2675,7 +2690,9 @@ const IEVA_B = [['E5',.75],['C5',.25],['C5',.5],['E5',.5], ['D5',.5],['B4',.5],[
   ['A4',.5],['B4',.5],['C5',.5],['D5',.5], ['E5',.75],['C5',.25],['C5',.5],['E5',.5], ['D5',.5],['B4',.5],['B4',.5],['C5',.5],
   ['D5',.5],['E5',.25],['D5',.25],['C5',.5],['B4',.5], ['A4',1],['A4',1]];
 const IEVA_CH = { A: ['Am','Am','G','Am','Am','Am','G','Am'], B: ['C','G','G','Am','C','G','G','Am'] };
-const IEVA_CELLO = { A: ['E4','E4','D4','E4','C4','C4','D4','C4'], B: ['E4','D4','B3','C4','E4','D4','B3','A3'] };
+// dos pasos por compás: grave y agudo del acorde, como una ola
+const ARP2 = { Am: ['A3', 'E4'], G: ['G3', 'D4'], C: ['C4', 'G4'] };
+const IEVA_CELLO = { A: IEVA_CH.A.flatMap(c => ARP2[c]), B: IEVA_CH.B.flatMap(c => ARP2[c]) };
 const IEVA_FORM = 'AABBAABB';
 function ievaDrums(start, bars) { // polca: bombo en 1, caja en 2, hi-hat a contratiempo
   const d = [];
@@ -2687,7 +2704,7 @@ const IEVA = {
   colors: ['#1f7a3a', '#9dff7a'], art: 'leek', bpm: 132, demo: [32, 64],
   piano: [...IEVA_FORM].flatMap((p, i) => seq(i * 16, p === 'A' ? IEVA_A : IEVA_B)).concat([['A4', 128, 1.5]]),
   bass: [...IEVA_FORM].flatMap((p, i) => bassBar(IEVA_CH[p], i * 16, 2)).concat([['A3', 128, 1.5]]),
-  cello: celloLine([...IEVA_FORM].flatMap(p => IEVA_CELLO[p]), 0, 2),
+  cello: celloRun([...IEVA_FORM].flatMap(p => IEVA_CELLO[p]), 0, 1, 4),
   drums: [...ievaDrums(0, 64), [CRASH, 128]],
 };
 
@@ -2702,8 +2719,8 @@ const KING = {
   colors: ['#5a1a6e', '#ff7ae0'], art: 'crown', tempo: [[0, 96], [32, 116], [64, 140], [96, 168]], demo: [64, 96],
   piano: [...Array(8)].flatMap((_, k) => seq(k * 16, KING_M)).concat([['A5', 128, 2]]),
   bass: [...Array(8)].flatMap((_, k) => KING_B.map((p, i) => [p, k * 16 + i, .5])).concat([['A2', 128, 2]]),
-  // el cello baja por semitonos en una sola curva larga: do, si, si bemol, la, sol
-  cello: [...Array(8)].map((_, k) => { const s = k * 16; return { pts: [['C5', s], ['C5', s + 3.2], ['B4', s + 4], ['B4', s + 5.4], ['Bb4', s + 6], ['Bb4', s + 7.4], ['A4', s + 8], ['A4', s + 11.2], ['G4', s + 12]], end: s + 15.6 }; }),
+  // el cello arpegia el acorde de cada compás, con saltos de octava en el compás tenso
+  cello: celloRun([...Array(8)].flatMap(() => ['A3','C4','E4','C4', 'B3','B4','Bb3','Bb4', 'A3','C4','E4','A4', 'C4','E4','G4','E4']), 0, 1, 8),
   drums: [...Array(32)].flatMap((_, k) => { const s = 4 * k; return [[k % 8 === 0 ? CRASH : KICK, s], [SNARE, s + 1], [KICK, s + 2], [SNARE, s + 3]]; }).concat([[CRASH, 128]]),
 };
 const BUILTIN = [IEVA, KING].map(d => ({ id: d.id, title: d.title, credit: d.credit, tag: d.tag, colors: d.colors, art: d.art, def: d }));
@@ -2847,8 +2864,16 @@ function gameUp(id) {
   if (!h) return;
   game.holds.delete(id);
   h.voice.stop();
-  if (songTime < h.n.end - 0.12) { h.n.g.cut = true; game.popups.push({ text: 'Soltaste antes', c: '#7c82a8', li: laneOfNote(h.n), t0: performance.now() }); }
+  if (songTime < h.n.end - 0.12) { h.n.g.cut = true; game.combo = 0; game.popups.push({ text: 'Soltaste antes', c: '#7c82a8', li: laneOfNote(h.n), t0: performance.now() }); }
 }
+// Posición del dedo (en franjas del juego) convertida a altura de nota, para que el cello suene donde está el dedo
+function posToBand(pos) {
+  const L = game.lanes, i = Math.max(0, Math.min(L.length - 1, Math.floor(pos)));
+  if (i >= L.length - 1) return L[L.length - 1];
+  return L[i] + Math.max(0, pos - i) * (L[i + 1] - L[i]);
+}
+// Qué tan bien se sostuvo o siguió una nota larga (0 a 1)
+const trackOf = n => n.kind === 'tap' ? 1 : Math.min(1, (n.g.on || 0) / Math.max(0.05, n.end - n.pts[0].t - 0.1));
 function gameUpdate() {
   if (!game.active) return;
   const nowMs = performance.now(), dt = Math.min(0.05, (nowMs - game.lastT) / 1000); game.lastT = nowMs;
@@ -2858,13 +2883,24 @@ function gameUpdate() {
     for (const n of game.pn) if (!n.g.j && n.pts[0].t < t - game.win.o) judge(n, 'm', laneOfNote(n));
     for (const [id, h] of game.holds) {
       const n = h.n;
-      if (songTime >= n.end) { h.voice.stop(); game.holds.delete(id); game.score += 50 * mult(); n.g.full = true; continue; }
+      if (songTime >= n.end) {
+        h.voice.stop(); game.holds.delete(id);
+        if (trackOf(n) >= 0.8) { game.score += 50 * mult(); n.g.full = true; }
+        continue;
+      }
       if (n.kind === 'slide') {
-        const bf = freeAt(n, songTime);
-        h.voice.set(midiOf(bf, game.layer));
-        h.track = Math.abs((h.y - game.top) / game.lh - 0.5 - lanePos(bf)) < 0.8;
-        if (h.track) game.score += 140 * dt * mult();
-      } else game.score += 90 * dt * mult();
+        // el cello suena donde está tu dedo: si no sigues la curva, se oye desafinado y no suma
+        const fpos = (h.y - game.top) / game.lh - 0.5;
+        h.voice.set(midiOf(posToBand(fpos), game.layer));
+        h.track = Math.abs(fpos - lanePos(freeAt(n, songTime))) < 0.5;
+        if (h.track) { h.off = 0; n.g.on = (n.g.on || 0) + dt; game.score += 140 * dt * mult(); }
+        else {
+          h.off = (h.off || 0) + dt;
+          if (h.off > 0.25 && !h.lost) { h.lost = true; game.combo = 0; game.popups.push({ text: 'Sigue la curva', c: '#ff5c8a', li: Math.max(0, Math.min(game.lanes.length - 1, Math.round(fpos))), t0: performance.now() }); }
+          if (h.off === 0) h.lost = false;
+        }
+        if (h.track) h.lost = false;
+      } else { n.g.on = (n.g.on || 0) + dt; game.score += 90 * dt * mult(); }
     }
   }
   // fin de la canción
@@ -2897,7 +2933,7 @@ function drawGame() {
   }
   // línea y receptores
   g.fillStyle = 'rgba(255,255,255,0.85)'; g.fillRect(px - 1, game.top, 2, lh * n);
-  const pressed = new Set([...game.holds.values()].map(h => laneOfNote(h.n)));
+  const pressed = new Set([...game.holds.values()].map(h => h.n.kind === 'slide' ? Math.round((h.y - game.top) / game.lh - 0.5) : laneOfNote(h.n)));
   for (let i = 0; i < n; i++) {
     g.beginPath(); g.arc(px, laneY(i), Math.min(lh * 0.3, 26), 0, Math.PI * 2);
     g.lineWidth = 2; g.strokeStyle = L.color; g.globalAlpha = 0.55; g.stroke();
@@ -2910,8 +2946,8 @@ function drawGame() {
     const s = nt.pts[0].t, xs = xOf(s), xe = xOf(nt.end);
     if (xe < -30 || xs > W + 30) continue;
     const li = laneOfNote(nt), y = laneY(li), j = nt.g.j, hit = j && j !== 'm';
-    const held = [...game.holds.values()].some(h => h.n === nt);
-    const col = j === 'm' || nt.g.cut ? '#3a3f5c' : held ? L.glow : L.color;
+    const hh = [...game.holds.values()].find(h => h.n === nt), held = !!hh && hh.track !== false;
+    const col = j === 'm' || nt.g.cut ? '#3a3f5c' : held ? L.glow : hh ? '#7a6a8c' : L.color;
     if (nt.hit) { if (!hit) { g.fillStyle = col; g.globalAlpha = j === 'm' ? 0.5 : 1; drumShape(nt.pts[0].b, xs, y, gemR * 0.95); g.globalAlpha = 1; } continue; }
     if (nt.kind === 'tap') {
       if (hit) continue;
@@ -2930,6 +2966,12 @@ function drawGame() {
     }
     g.stroke(); g.shadowBlur = 0; g.globalAlpha = 1; g.lineCap = 'butt';
     if (!hit) { g.fillStyle = col; g.beginPath(); g.arc(xs, y, gemR, 0, Math.PI * 2); g.fill(); }
+  }
+  // dónde está tu dedo mientras sigues una curva
+  for (const h of game.holds.values()) {
+    if (h.n.kind !== 'slide') continue;
+    g.beginPath(); g.arc(px, h.y, 11, 0, Math.PI * 2);
+    g.fillStyle = h.track === false ? '#ff5c8a' : '#ffffff'; g.fill();
   }
   // destellos al acertar
   const tn = performance.now();
@@ -2961,7 +3003,8 @@ function finishGame() {
   for (const h of game.holds.values()) h.voice.stop();
   game.holds.clear();
   const total = game.pn.length || 1, c = game.counts;
-  const acc = (c.p * JUDGE.p.w + c.g * JUDGE.g.w + c.o * JUDGE.o.w) / total;
+  // las notas largas cuentan según cuánto las sostuviste o seguiste
+  const acc = game.pn.reduce((a, n) => a + (n.g.j ? JUDGE[n.g.j].w * trackOf(n) : 0), 0) / total;
   const stars = acc >= 0.9 ? 3 : acc >= 0.75 ? 2 : acc >= 0.5 ? 1 : 0;
   const key = 'nt-best-' + game.lv.id + '-' + LAYERS[game.layer].id + '-' + game.diff;
   const prev = +store(key) || 0, score = Math.round(game.score);
