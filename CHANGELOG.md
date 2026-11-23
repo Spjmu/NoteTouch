@@ -1,5 +1,16 @@
 # Versiones de NoteTouch
 
+## v0.2.0 — modo jugar (23 de noviembre de 2026)
+
+- Pantalla de inicio con dos caminos: Jugar y Crear.
+- Modo jugar estilo Guitar Hero: la canción suena y tú tocas la parte de un instrumento. Si fallas, esa nota no suena.
+- Cada instrumento se juega distinto: batería (tocar a tiempo), bajo (mantener), piano (melodía) y cello (seguir las curvas deslizando).
+- Calificación perfecto / bien / casi / fallo, racha y multiplicador hasta ×4, estrellas y récord por canción, instrumento y dificultad.
+- Dificultad Fácil (menos notas, más margen) y Normal; ajuste del retraso de audífonos o parlante.
+- Tres canciones de dominio público con arreglo original de NoteTouch: Korobeiniki, Oda a la alegría (Beethoven) y Cumpleaños feliz (Mildred J. Hill).
+- Tu propia canción se puede jugar, y enviar como nivel por enlace (la canción viaja dentro del enlace, sin servidor).
+- Retar a un amigo: comparte tu puntaje con el enlace a la misma canción.
+
 ## v0.1.0-alpha — 22 de noviembre de 2026
 
 Primera versión completa, probada en Safari de iPhone.
