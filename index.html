@@ -352,7 +352,7 @@
   <div class="dot"></div>
   <h1>Toca para empezar</h1>
   <p>Toca una franja para sonar una nota, mantén para alargarla y desliza para cambiar de nota.<br><br><strong>En iPhone:</strong> revisa que el interruptor de silencio esté apagado.</p>
-  <small style="color:var(--dim);opacity:.6;font-size:10px;position:absolute;bottom:calc(14px + env(safe-area-inset-bottom))">v19 · Cello y bajo: FluidR3 GM · Piano: Salamander Grand Piano (A. Holm) · CC BY 3.0</small>
+  <small style="color:var(--dim);opacity:.6;font-size:10px;position:absolute;bottom:calc(14px + env(safe-area-inset-bottom))">v20 · Cello y bajo: FluidR3 GM · Piano: Salamander Grand Piano (A. Holm) · CC BY 3.0</small>
 </div>
 
 <script>
@@ -495,12 +495,12 @@ function freeBand(fb) {
 // Cada voz avisa a su botón de capa cuando golpea una nota, para que el ícono "brinque"
 const kick = LAYERS.map(() => 0);
 let mainOut = null, layerBus = null;
-const makeVoice = (l, m) => {
+const makeVoice = (l, m, opt) => {
   const id = LAYERS[l].id;
   // cada voz sale por el canal de su capa (salvo el saludo, que tiene su propio canal)
   const prev = master;
   if (layerBus && master === mainOut) master = layerBus[l];
-  const v = (id === 'piano' ? pianoVoice : id === 'bass' ? bassVoice : id === 'cello' ? celloVoice : id === 'synth' ? warmSynthVoice : synthVoice)(m);
+  const v = (id === 'piano' ? pianoVoice : id === 'bass' ? bassVoice : id === 'cello' ? celloVoice : id === 'synth' ? warmSynthVoice : synthVoice)(m, opt);
   master = prev;
   kick[l] = 1;
   const set = v.set.bind(v);
@@ -629,27 +629,63 @@ function pianoVoice(m) {
 // Bajo real: suena la grabación de esa nota; al deslizar cambia la velocidad de la
 // grabación, como un bajo sin trastes. Si aún no cargó, usa el bajo sintetizado.
 const BASS_GAIN = 2.1;
-function bassVoice(m) {
+// curva de saturación suave: le da armónicos al bajo para que llene aunque el parlante sea pequeño
+let satCurveCache = null;
+function satCurve() {
+  if (satCurveCache) return satCurveCache;
+  const c = new Float32Array(1024);
+  for (let i = 0; i < c.length; i++) { const x = i / 511.5 - 1; c[i] = Math.tanh(x * 3) / Math.tanh(3); }
+  return satCurveCache = c;
+}
+// opt.ring: la nota vibra sola y se va apagando (juego); opt.vel: fuerza del golpe (0 a 1)
+function bassVoice(m, opt = {}) {
   // grabación más cercana (las canciones del juego usan notas que no están grabadas, como fa y si)
   let near = null;
   for (const k in bassBuf) if (near === null || Math.abs(k - m) < Math.abs(near - m)) near = +k;
   if (near === null || Math.abs(near - m) > 4) return synthBassVoice(m);
-  const buf = bassBuf[near], r0 = Math.pow(2, (m - near) / 12);
-  const t = ac.currentTime;
+  const buf = bassBuf[near], r0 = Math.pow(2, (m - near) / 12), vel = opt.vel == null ? 0.5 : opt.vel;
+  const t = ac.currentTime, out = master;
   const src = ac.createBufferSource(); src.buffer = buf;
   const g = ac.createGain();
-  g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(BASS_GAIN, t + 0.004);
-  src.connect(g); g.connect(master);
+  g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(BASS_GAIN * (0.8 + 0.4 * vel), t + 0.004);
+  if (opt.ring) g.gain.setTargetAtTime(0.0001, t + 0.3, RING_S / 3.2);
+  // capa de cuerpo: el mismo sonido saturado y sin el grave, que es lo que el oído alcanza en el celular
+  const sh = ac.createWaveShaper(); sh.curve = satCurve();
+  const hp = ac.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 320;
+  const lp = ac.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 1800 + 2200 * vel;
+  const grit = ac.createGain(); grit.gain.value = 0.22 + 0.3 * vel;
+  src.connect(g); src.connect(sh); sh.connect(hp); hp.connect(lp); lp.connect(grit); grit.connect(g);
+  g.connect(out);
   src.playbackRate.value = r0;
   src.start(t, 0.015); // la grabación trae unos milisegundos de silencio al inicio
+  if (opt.ring) src.stop(t + RING_S + 0.5);
+  // chasquido del slap: un golpe corto y brillante encima de la nota
+  const pop = v => {
+    const n = ac.currentTime, len = Math.floor(ac.sampleRate * 0.045);
+    const nb = ac.createBuffer(1, len, ac.sampleRate), d = nb.getChannelData(0);
+    for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 3);
+    const ns = ac.createBufferSource(); ns.buffer = nb;
+    const bp = ac.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = 2400; bp.Q.value = 0.9;
+    const pg = ac.createGain(); pg.gain.value = 0.5 + 0.7 * v;
+    ns.connect(bp); bp.connect(pg); pg.connect(out); ns.start(n);
+  };
   return {
     set(m2) { glideTo(src.playbackRate, Math.pow(2, (m2 - near) / 12), GLIDE); },
-    stop() { const n = ac.currentTime; glideTo(g.gain, 0, 0.05); src.stop(n + 0.35); }
+    stop() { const n = ac.currentTime; glideTo(g.gain, 0, 0.05); src.stop(n + 0.35); },
+    // slap: más fuerte, más brillante y con chasquido, según la velocidad del jalón
+    slap(v) { pop(v); glideTo(grit.gain, 0.5 + 0.9 * v, 0.01); glideTo(lp.frequency, 3500 + 3500 * v, 0.01); setTimeout(() => glideTo(lp.frequency, 1800 + 1500 * v, 0.25), 60); },
+    // silenciar: en seco (fade corto) o apagándose suave
+    mute(fade) {
+      const n = ac.currentTime, f = Math.max(0.025, fade);
+      if (g.gain.cancelAndHoldAtTime) g.gain.cancelAndHoldAtTime(n); else { g.gain.cancelScheduledValues(n); g.gain.setValueAtTime(g.gain.value, n); }
+      g.gain.linearRampToValueAtTime(0.0001, n + f);
+      src.stop(n + f + 0.05);
+    },
   };
 }
 
 // Bajo sintetizado: sierra con filtro cerrado + subgrave; los armónicos lo hacen audible en el parlante del celular
-function synthBassVoice(m) {
+function synthBassVoice(m, opt = {}) {
   const t = ac.currentTime, f = freq(m);
   const o1 = ac.createOscillator(), o2 = ac.createOscillator();
   o1.type = 'sawtooth'; o2.type = 'sine';
@@ -668,7 +704,9 @@ function synthBassVoice(m) {
       const n = ac.currentTime;
       glideTo(g.gain, 0, 0.04);
       o1.stop(n + 0.3); o2.stop(n + 0.3);
-    }
+    },
+    slap() { glideTo(filt.frequency, 3000, 0.005); glideTo(filt.frequency, 700, 0.1); },
+    mute(fade) { const n = ac.currentTime; glideTo(g.gain, 0, Math.max(0.01, fade / 3)); o1.stop(n + fade + 0.2); o2.stop(n + fade + 0.2); }
   };
 }
 
@@ -715,6 +753,7 @@ function celloVoice(m) {
   let cur = layer(base0, Math.pow(2, (m - base0) / 12), t, 0.05, 0.02);
   const startedAt = t;
   const fading = [];
+  let stopped = false;
   return {
     set(m2, tc = 0.035) {
       const nb = nearestCello(m2);
@@ -733,8 +772,11 @@ function celloVoice(m) {
       }
       glideTo(cur.src.playbackRate, Math.pow(2, (m2 - cur.base) / 12), tc);
     },
+    // arco: qué tan fuerte suena según la velocidad con que frotas
+    level(x) { if (!stopped) glideTo(out.gain, CELLO_GAIN * Math.max(0, Math.min(1.2, x)), 0.04); },
     stop() {
       const n = ac.currentTime;
+      stopped = true;
       glideTo(out.gain, 0, 0.09);
       cur.src.stop(n + 0.6);
     }
@@ -2616,7 +2658,10 @@ function levelNotes(lv) {
   lv.scale = sc;
   const band = (l, p) => NB - 1 - sc.indexOf(norm(l, p));
   for (const [p, s, d] of def.piano || []) out.push({ layer: P, pts: [{ t: T(s), b: band(P, p) }], end: T(s + d * 0.9), rec: false });
-  for (const [p, s, d] of def.bass || []) out.push({ layer: B, pts: [{ t: T(s), b: band(B, p) }], end: T(s + d * 0.94), rec: false });
+  for (const [p, s, d, f = {}] of def.bass || []) {
+    const end = T(s + d * 0.94);
+    out.push({ layer: B, pts: [{ t: T(s), b: band(B, p) }], end, rec: false, slap: !!f.slap, fade: f.fade ? end - T(s + d * 0.94 - f.fade) : 0 });
+  }
   for (const c of def.cello || []) out.push({ layer: C, pts: c.pts.map(([p, s]) => ({ t: T(s), b: band(C, p) })), end: T(c.end), rec: false });
   for (const [lane, s] of def.drums || []) out.push({ layer: D, pts: [{ t: T(s), b: lane }], end: T(s) + HIT_LEN, rec: false, hit: true });
   lv.beats = [];
@@ -2690,21 +2735,55 @@ const IEVA_B = [['E5',.75],['C5',.25],['C5',.5],['E5',.5], ['D5',.5],['B4',.5],[
   ['A4',.5],['B4',.5],['C5',.5],['D5',.5], ['E5',.75],['C5',.25],['C5',.5],['E5',.5], ['D5',.5],['B4',.5],['B4',.5],['C5',.5],
   ['D5',.5],['E5',.25],['D5',.25],['C5',.5],['B4',.5], ['A4',1],['A4',1]];
 const IEVA_CH = { A: ['Am','Am','G','Am','Am','Am','G','Am'], B: ['C','G','G','Am','C','G','G','Am'] };
-// dos pasos por compás: grave y agudo del acorde, como una ola
-const ARP2 = { Am: ['A3', 'E4'], G: ['G3', 'D4'], C: ['C4', 'G4'] };
-const IEVA_CELLO = { A: IEVA_CH.A.flatMap(c => ARP2[c]), B: IEVA_CH.B.flatMap(c => ARP2[c]) };
 const IEVA_FORM = 'AABBAABB';
+// Cello: lleva la melodía. Cada frase es un gesto: tocas, y sigues la melodía deslizando sin soltar.
+function celloMelody(list, start, groupBeats) {
+  const groups = new Map();
+  for (const nt of list) { const k = Math.floor((nt[1] - start + 1e-6) / groupBeats); if (!groups.has(k)) groups.set(k, []); groups.get(k).push(nt); }
+  return [...groups.values()].map(gr => {
+    const pts = []; let lastP = null, lastD = 0;
+    for (const [p, s, d] of gr) {
+      if (p !== lastP) { if (lastP !== null) pts.push([lastP, s - Math.min(0.2, lastD * 0.5)]); pts.push([p, s]); lastP = p; }
+      lastD = d;
+    }
+    const [, ls, ld] = gr[gr.length - 1];
+    return { pts, end: ls + ld - Math.min(0.3, ld * 0.45) };
+  });
+}
+// Piano: acordes de tres notas (varios dedos a la vez) y corridas rápidas
+const CH3 = { Am: ['A4','C5','E5'], G: ['G4','B4','D5'], C: ['G4','C5','E5'], B7: ['B4','D#5','A5'], Bb: ['Bb4','D5','G5'] };
+const chord = (c, s, d) => CH3[c].map(q => [q, s, d]);
+function ievaPiano(part, s0) {
+  return IEVA_CH[part].flatMap((c, k) => {
+    const s = s0 + 2 * k;
+    if (part === 'A' && (k === 3 || k === 7)) return ['A4','B4','C5','D5'].map((q, i) => [q, s + 1 + i * 0.25, 0.25]); // corrida
+    if (part === 'A') return chord(c, s + 1, 0.45);           // el "pa" de la polca
+    return [...chord(c, s + 0.5, 0.4), ...chord(c, s + 1.5, 0.4)]; // contratiempos
+  });
+}
+// Bajo: pulsa y deja vibrar; slap al empezar cada parte; al final de la parte, nota corta que hay que callar
+function ievaBass(part, s0) {
+  return IEVA_CH[part].flatMap((c, k) => {
+    const s = s0 + 2 * k, [r, f] = BASS_OF[c], slap = k === 0 || (part === 'B' && k === 4);
+    if (k === 7) return [[r, s, 0.5, { slap }]];
+    return [[r, s, 1, { slap }], [f, s + 1, 1]];
+  });
+}
 function ievaDrums(start, bars) { // polca: bombo en 1, caja en 2, hi-hat a contratiempo
   const d = [];
   for (let k = 0; k < bars; k++) { const s = start + 2 * k; d.push([k % 8 === 0 ? CRASH : KICK, s], [HAT, s + .5], [SNARE, s + 1], [HAT, s + 1.5]); }
   return d;
 }
+const IEVA_MEL = [...IEVA_FORM].flatMap((p, i) => seq(i * 16, p === 'A' ? IEVA_A : IEVA_B));
 const IEVA = {
   id: 'ievan', title: 'Ievan Polkka', credit: 'Polca popular finlandesa', tag: 'La del puerro que gira',
   colors: ['#1f7a3a', '#9dff7a'], art: 'leek', bpm: 132, demo: [32, 64],
-  piano: [...IEVA_FORM].flatMap((p, i) => seq(i * 16, p === 'A' ? IEVA_A : IEVA_B)).concat([['A4', 128, 1.5]]),
-  bass: [...IEVA_FORM].flatMap((p, i) => bassBar(IEVA_CH[p], i * 16, 2)).concat([['A3', 128, 1.5]]),
-  cello: celloRun([...IEVA_FORM].flatMap(p => IEVA_CELLO[p]), 0, 1, 4),
+  cello: [...celloMelody(IEVA_MEL, 0, 8),
+    // doble cuerda: al cerrar cada segunda parte B, un segundo dedo suma la quinta
+    ...[3, 7].map(i => ({ pts: [['E5', i * 16 + 14]], end: i * 16 + 15.8 })),
+    { pts: [['A4', 128]], end: 129.6 }, { pts: [['E5', 128]], end: 129.6 }],
+  piano: [...IEVA_FORM].flatMap((p, i) => ievaPiano(p, i * 16)).concat(chord('Am', 128, 1.5)),
+  bass: [...IEVA_FORM].flatMap((p, i) => ievaBass(p, i * 16)).concat([['A3', 128, 1.5, { slap: true, fade: 0.8 }]]),
   drums: [...ievaDrums(0, 64), [CRASH, 128]],
 };
 
@@ -2714,13 +2793,15 @@ const KING_M = [['A4',.5],['B4',.5],['C5',.5],['D5',.5],['E5',.5],['C5',.5],['E5
   ['A4',.5],['B4',.5],['C5',.5],['D5',.5],['E5',.5],['C5',.5],['E5',.5],['A5',.5],
   ['G5',.5],['E5',.5],['C5',.5],['E5',.5],['G5',2]];
 const KING_B = ['A2','E3','A2','E3', 'B2','B2','Bb2','Bb2', 'A2','E3','A2','E3', 'C3','G3','C3','G3'];
+const kingPiano = s => [...chord('Am', s, 1.5), ...chord('Am', s + 2, 1.5), ...chord('B7', s + 4, 1.5), ...chord('Bb', s + 6, 1.5),
+  ...chord('Am', s + 8, 1.5), ...chord('Am', s + 10, 1.5), ...chord('C', s + 12, 1.5), ...['C5','D5','E5','G5'].map((q, i) => [q, s + 14 + i * 0.5, 0.5])];
+const KING_MEL = [...Array(8)].flatMap((_, k) => seq(k * 16, KING_M));
 const KING = {
   id: 'rey', title: 'El rey de la montaña', credit: 'Edvard Grieg (1875)', tag: 'Empieza suave y termina en caos',
   colors: ['#5a1a6e', '#ff7ae0'], art: 'crown', tempo: [[0, 96], [32, 116], [64, 140], [96, 168]], demo: [64, 96],
-  piano: [...Array(8)].flatMap((_, k) => seq(k * 16, KING_M)).concat([['A5', 128, 2]]),
-  bass: [...Array(8)].flatMap((_, k) => KING_B.map((p, i) => [p, k * 16 + i, .5])).concat([['A2', 128, 2]]),
-  // el cello arpegia el acorde de cada compás, con saltos de octava en el compás tenso
-  cello: celloRun([...Array(8)].flatMap(() => ['A3','C4','E4','C4', 'B3','B4','Bb3','Bb4', 'A3','C4','E4','A4', 'C4','E4','G4','E4']), 0, 1, 8),
+  cello: [...celloMelody(KING_MEL, 0, 8), { pts: [['A4', 128]], end: 129.8 }, { pts: [['E5', 128]], end: 129.8 }],
+  piano: [...Array(8)].flatMap((_, k) => kingPiano(k * 16)).concat(chord('Am', 128, 2)),
+  bass: [...Array(8)].flatMap((_, k) => KING_B.map((p, i) => [p, k * 16 + i, i === 15 ? 0.5 : 1, { slap: i === 0 }])).concat([['A2', 128, 2, { slap: true, fade: 1.2 }]]),
   drums: [...Array(32)].flatMap((_, k) => { const s = 4 * k; return [[k % 8 === 0 ? CRASH : KICK, s], [SNARE, s + 1], [KICK, s + 2], [SNARE, s + 3]]; }).concat([[CRASH, 128]]),
 };
 const BUILTIN = [IEVA, KING].map(d => ({ id: d.id, title: d.title, credit: d.credit, tag: d.tag, colors: d.colors, art: d.art, def: d }));
@@ -2737,9 +2818,11 @@ function levelFrom(lv) {
 
 // ---- Estado del juego ----
 const game = { active: false };
-const MECH = { drums: 'Toca a tiempo', bass: 'Mantén las notas', piano: 'La melodía', synth: 'La melodía', cello: 'Sigue las curvas' };
+const MECH = { drums: 'Golpea a tiempo', bass: 'Pulsa, slap y silencia', piano: 'Acordes y corridas', synth: 'La melodía', cello: 'Arco y curvas' };
+const RING_S = 2.0;              // cuánto vibra sola una nota de bajo
+const SLAP_MS = 170, SLAP_PX = 22; // jalón para el slap: distancia mínima en ese tiempo
 const JUDGE = { p: { t: '¡Perfecto!', c: '#7ef0c0', pts: 300, w: 1 }, g: { t: 'Bien', c: '#4de1ff', pts: 200, w: 0.7 }, o: { t: 'Casi', c: '#ffd65c', pts: 100, w: 0.4 }, m: { t: 'Fallo', c: '#ff5c8a', pts: 0, w: 0 } };
-const kindOf = n => n.hit ? 'tap' : (n.pts.some(p => Math.round(p.b) !== Math.round(n.pts[0].b)) ? 'slide' : (n.end - n.pts[0].t >= 0.45 ? 'hold' : 'tap'));
+const kindOf = n => n.hit ? 'tap' : LAYERS[n.layer].id === 'bass' ? 'pluck' : (n.pts.some(p => Math.round(p.b) !== Math.round(n.pts[0].b)) ? 'slide' : (n.end - n.pts[0].t >= 0.45 ? 'hold' : 'tap'));
 const calib = () => (+store('nt-calib') || 0) / 1000;
 
 // Mientras suena una canción del juego (o su demo), tu canción queda guardada aparte
@@ -2781,20 +2864,31 @@ function enterGame(lv, layer, diff) {
   game.preview = null;
   swapIn(lv);
   cur = layer;
+  const id = LAYERS[layer].id, easy = diff === 'easy';
   // notas que toca el jugador; en fácil se quitan las muy seguidas (y los hi-hat), que siguen sonando solas
   const mine = notes.filter(n => n.layer === layer).sort((a, b) => a.pts[0].t - b.pts[0].t);
   const pn = [];
   let last = -9;
   for (const n of mine) {
     const t = n.pts[0].t;
-    if (diff === 'easy' && (t - last < 0.28 || (n.hit && n.pts[0].b === HAT))) continue;
-    n.play = true; n.g = { j: null }; n.kind = kindOf(n); pn.push(n); last = t;
+    if (easy && (t - last < 0.28 || (n.hit && n.pts[0].b === HAT))) continue;
+    n.play = true; n.g = { j: null }; n.kind = kindOf(n); n.needSlap = !!n.slap && !easy; pn.push(n); last = t;
   }
+  // bajo: si después de una nota viene un silencio, hay que callarla (en fácil se calla sola)
+  if (id === 'bass') mine.forEach((n, i) => {
+    const nx = mine[i + 1], len = n.end - n.pts[0].t, gap = nx ? nx.pts[0].t - n.end : 9;
+    if (n.play && gap > 0.12 && len < RING_S - 0.25) {
+      if (easy) n.autoMute = true;
+      else { const fade = Math.min(n.fade || 0, len * 0.8); n.mute = { t: n.end - fade, fade, done: null }; }
+    }
+  });
   const lanes = [...new Set(pn.flatMap(n => n.pts.map(p => Math.round(p.b))))].sort((a, b) => a - b);
   Object.assign(game, {
-    active: true, lv, layer, diff, pn, lanes, holds: new Map(), popups: [], bursts: [], flash: lanes.map(() => 0),
+    active: true, lv, layer, diff, pn, lanes, holds: new Map(), plucks: new Map(), mutes: new Map(), ringing: [],
+    popups: [], bursts: [], flash: lanes.map(() => 0),
+    bow: null, bowAcc: 0, bowNeed: id === 'cello' && !easy, bowLvl: id === 'cello' && !easy ? 0 : 1, noBow: 0,
     score: 0, combo: 0, maxCombo: 0, counts: { p: 0, g: 0, o: 0, m: 0 }, done: false, paused: false,
-    win: diff === 'easy' ? { p: 0.08, g: 0.14, o: 0.2 } : { p: 0.055, g: 0.1, o: 0.15 }, lastT: performance.now(),
+    win: easy ? { p: 0.08, g: 0.14, o: 0.2 } : { p: 0.055, g: 0.1, o: 0.15 }, lastT: performance.now(),
   });
   PPS = 210;
   document.getElementById('app').classList.add('playing');
@@ -2809,12 +2903,19 @@ function gameLayout() {
   const n = game.lanes.length || 1;
   game.lh = Math.min(H / n, H * 0.24);
   game.top = (H - game.lh * n) / 2;
+  game.bowX = W * 0.62; // en el cello, a la derecha de esta línea está el arco
 }
 window.addEventListener('resize', () => { if (game.active) gameLayout(); });
+function silenceAll() {
+  for (const h of game.holds.values()) if (h.voice) h.voice.stop();
+  game.holds.clear();
+  for (const n of game.ringing || []) if (n.g.voice) { n.g.voice.mute(0.08); n.g.voice = null; }
+  game.ringing = [];
+}
 function exitGame() {
   if (!game.active) return;
   if (running) stopRun();
-  for (const h of game.holds.values()) if (h.voice) h.voice.stop();
+  silenceAll();
   game.active = false;
   document.getElementById('app').classList.remove('playing');
   document.getElementById('hud').hidden = true;
@@ -2830,41 +2931,108 @@ function lanePos(bf) {
 }
 const laneOfNote = n => game.lanes.indexOf(Math.round(n.pts[0].b));
 const mult = () => Math.min(4, 1 + Math.floor(game.combo / 10));
+const localX = e => e.clientX - stage.getBoundingClientRect().left;
+const popup = (text, c, li) => game.popups.push({ text, c, li, t0: performance.now() });
 
 function judge(n, j, li) {
   n.g.j = j;
   game.counts[j]++;
   if (j === 'm') game.combo = 0;
   else { game.combo++; game.maxCombo = Math.max(game.maxCombo, game.combo); game.score += JUDGE[j].pts * mult(); game.bursts.push({ li, t0: performance.now(), c: JUDGE[j].c }); }
-  game.popups.push({ text: JUDGE[j].t, c: JUDGE[j].c, li, t0: performance.now() });
+  popup(JUDGE[j].t, JUDGE[j].c, li);
 }
 function gameDown(e) {
   if (!running || game.done || game.paused) return;
-  const y = localY(e), li = Math.floor((y - game.top) / game.lh);
+  const y = localY(e), x = localX(e), id = LAYERS[game.layer].id;
+  // cello: a la derecha está el arco; frotar de lado a lado es lo que hace sonar las cuerdas
+  if (game.bowNeed && x > game.bowX) { game.bow = { id: e.pointerId, x }; return; }
+  const li = Math.floor((y - game.top) / game.lh);
   if (li < 0 || li >= game.lanes.length) return;
   game.flash[li] = 1;
   const t = now() - calib();
-  let best = null, bd = 9;
+  let best = null, bd = 9, isMute = false;
   for (const n of game.pn) {
-    if (n.g.j || laneOfNote(n) !== li) continue;
-    const d = Math.abs(n.pts[0].t - t);
-    if (d <= game.win.o && d < bd) { best = n; bd = d; }
+    if (laneOfNote(n) !== li) continue;
+    if (!n.g.j && !n.g.pending) { const d = Math.abs(n.pts[0].t - t); if (d <= game.win.o && d < bd) { best = n; bd = d; isMute = false; } }
+    else if (n.mute && !n.mute.done && n.g.voice) { const d = Math.abs(n.mute.t - t); if (d <= game.win.o && d < bd) { best = n; bd = d; isMute = true; } }
   }
   if (!best) return; // tocar sin nota no castiga: solo se ilumina la franja
-  judge(best, bd <= game.win.p ? 'p' : bd <= game.win.g ? 'g' : 'o', li);
+  const gr = bd <= game.win.p ? 'p' : bd <= game.win.g ? 'g' : 'o';
+  if (isMute) { muteDown(best, e.pointerId, gr, li); return; }
   // tu toque es el que hace sonar el instrumento
-  if (best.hit) { drumHit(best.pts[0].b); kick[game.layer] = 1; return; }
+  if (best.hit) { judge(best, gr, li); drumHit(best.pts[0].b); kick[game.layer] = 1; return; }
+  if (id === 'bass') { pluckDown(best, e.pointerId, gr, li, x, y); return; }
+  judge(best, gr, li);
   const voice = makeVoice(game.layer, midiOf(best.pts[0].b, game.layer));
+  if (voice.level) voice.level(game.bowLvl);
   if (best.kind === 'tap') { setTimeout(() => voice.stop(), Math.max(120, (best.end - best.pts[0].t) * 1000)); return; }
   game.holds.set(e.pointerId, { n: best, voice, y });
 }
-function gameMove(e) { const h = game.holds.get(e.pointerId); if (h) h.y = localY(e); }
+// Bajo: pulsas y la nota vibra sola. Si arrancas con un jalón rápido, es slap (más fuerte cuanto más rápido).
+function pluckDown(n, pid, gr, li, x, y) {
+  // una nota nueva apaga la que venía sonando, como en un bajo de verdad
+  for (const r of game.ringing) if (r.g.voice) { r.g.voice.mute(0.04); r.g.voice = null; }
+  const voice = makeVoice(game.layer, midiOf(n.pts[0].b, game.layer), { ring: true, vel: 0.45 });
+  n.g.voice = voice; game.ringing = [n];
+  setTimeout(() => { if (n.g.voice === voice) n.g.voice = null; }, RING_S * 1000);
+  // en fácil, las notas que van seguidas de un silencio se callan solas
+  if (n.autoMute) setTimeout(() => { if (n.g.voice === voice) { voice.mute(0.06); n.g.voice = null; } }, (n.end - n.pts[0].t) * 1000);
+  if (n.needSlap) n.g.pending = true; else judge(n, gr, li);
+  game.plucks.set(pid, { n, gr, li, x, y, t0: performance.now(), done: false });
+}
+function finishPluck(p, vel) {
+  if (p.done) return;
+  p.done = true;
+  const n = p.n;
+  if (vel > 0 && n.g.voice) n.g.voice.slap(vel);
+  if (n.g.pending) {
+    n.g.pending = false;
+    judge(n, vel > 0 ? p.gr : 'o', p.li);
+    if (vel <= 0) popup('Faltó el slap', '#ffb547', p.li - 0.5);
+  }
+  if (vel > 0) { game.score += Math.round(60 * vel) * mult(); popup('¡Slap!', '#ffd65c', p.li - 0.5); }
+}
+// Silenciar: otro toque sobre la barra. Corte seco = tocar al final; apagado suave = apoyar en el anillo y sostener hasta el final.
+function muteDown(n, pid, gr, li) {
+  const v = n.g.voice;
+  if (n.mute.fade < 0.06) { v.mute(0.03); n.g.voice = null; muteDone(n, gr, li, 'Corte'); return; }
+  v.mute(Math.max(0.06, n.end - songTime));
+  game.mutes.set(pid, { n, gr, li });
+}
+function muteDone(n, gr, li, text) {
+  n.mute.done = gr;
+  game.score += Math.round(JUDGE[gr].pts * 0.6) * mult();
+  popup(text, '#e0d4ff', li);
+}
+function gameMove(e) {
+  const y = localY(e), x = localX(e);
+  if (game.bow && game.bow.id === e.pointerId) { game.bowAcc += Math.abs(x - game.bow.x); game.bow.x = x; return; }
+  const p = game.plucks.get(e.pointerId);
+  if (p && !p.done) {
+    const dt = performance.now() - p.t0, dist = Math.hypot(x - p.x, y - p.y);
+    if (dt < SLAP_MS && dist > SLAP_PX) finishPluck(p, Math.max(0.3, Math.min(1, dist / Math.max(dt, 8) / 1.5)));
+  }
+  const h = game.holds.get(e.pointerId); if (h) h.y = y;
+}
 function gameUp(id) {
+  if (game.bow && game.bow.id === id) { game.bow = null; return; }
+  const p = game.plucks.get(id);
+  if (p) { game.plucks.delete(id); finishPluck(p, 0); return; }
+  const m = game.mutes.get(id);
+  if (m) {
+    game.mutes.delete(id);
+    if (!m.n.mute.done) {
+      if (songTime < m.n.end - 0.1) { if (m.n.g.voice) m.n.g.voice.mute(0.03); m.n.mute.done = 'o'; popup('Soltaste pronto', '#7c82a8', m.li); }
+      else muteDone(m.n, m.gr, m.li, 'Silencio suave');
+    }
+    m.n.g.voice = null;
+    return;
+  }
   const h = game.holds.get(id);
   if (!h) return;
   game.holds.delete(id);
   h.voice.stop();
-  if (songTime < h.n.end - 0.12) { h.n.g.cut = true; game.combo = 0; game.popups.push({ text: 'Soltaste antes', c: '#7c82a8', li: laneOfNote(h.n), t0: performance.now() }); }
+  if (songTime < h.n.end - 0.12) { h.n.g.cut = true; game.combo = 0; popup('Soltaste antes', '#7c82a8', laneOfNote(h.n)); }
 }
 // Posición del dedo (en franjas del juego) convertida a altura de nota, para que el cello suene donde está el dedo
 function posToBand(pos) {
@@ -2873,14 +3041,24 @@ function posToBand(pos) {
   return L[i] + Math.max(0, pos - i) * (L[i + 1] - L[i]);
 }
 // Qué tan bien se sostuvo o siguió una nota larga (0 a 1)
-const trackOf = n => n.kind === 'tap' ? 1 : Math.min(1, (n.g.on || 0) / Math.max(0.05, n.end - n.pts[0].t - 0.1));
+const trackOf = n => n.kind === 'tap' || n.kind === 'pluck' ? 1 : Math.min(1, (n.g.on || 0) / Math.max(0.05, n.end - n.pts[0].t - 0.1));
 function gameUpdate() {
   if (!game.active) return;
   const nowMs = performance.now(), dt = Math.min(0.05, (nowMs - game.lastT) / 1000); game.lastT = nowMs;
   game.flash = game.flash.map(f => f * 0.85);
+  // arco: la velocidad con que frotas es la intensidad; si te quedas quieto, el cello se apaga
+  if (game.bowNeed) {
+    const target = Math.min(1, game.bowAcc / Math.max(dt, 0.008) / 450);
+    game.bowAcc = 0;
+    game.bowLvl += (target - game.bowLvl) * Math.min(1, dt / (target > game.bowLvl ? 0.04 : 0.22));
+  }
+  for (const p of game.plucks.values()) if (!p.done && nowMs - p.t0 > SLAP_MS) finishPluck(p, 0);
   if (running && !counting()) {
     const t = songTime - calib();
-    for (const n of game.pn) if (!n.g.j && n.pts[0].t < t - game.win.o) judge(n, 'm', laneOfNote(n));
+    for (const n of game.pn) if (!n.g.j && !n.g.pending && n.pts[0].t < t - game.win.o) judge(n, 'm', laneOfNote(n));
+    for (const [id, m] of game.mutes) if (songTime >= m.n.end - 0.02 && !m.n.mute.done) { muteDone(m.n, m.gr, m.li, 'Silencio suave'); m.n.g.voice = null; }
+    const bowing = game.bowLvl > 0.25;
+    let anyCello = false;
     for (const [id, h] of game.holds) {
       const n = h.n;
       if (songTime >= n.end) {
@@ -2888,20 +3066,25 @@ function gameUpdate() {
         if (trackOf(n) >= 0.8) { game.score += 50 * mult(); n.g.full = true; }
         continue;
       }
+      if (h.voice.level) { h.voice.level(game.bowLvl); anyCello = true; }
       if (n.kind === 'slide') {
         // el cello suena donde está tu dedo: si no sigues la curva, se oye desafinado y no suma
         const fpos = (h.y - game.top) / game.lh - 0.5;
         h.voice.set(midiOf(posToBand(fpos), game.layer));
         h.track = Math.abs(fpos - lanePos(freeAt(n, songTime))) < 0.5;
-        if (h.track) { h.off = 0; n.g.on = (n.g.on || 0) + dt; game.score += 140 * dt * mult(); }
-        else {
-          h.off = (h.off || 0) + dt;
-          if (h.off > 0.25 && !h.lost) { h.lost = true; game.combo = 0; game.popups.push({ text: 'Sigue la curva', c: '#ff5c8a', li: Math.max(0, Math.min(game.lanes.length - 1, Math.round(fpos))), t0: performance.now() }); }
-          if (h.off === 0) h.lost = false;
-        }
         if (h.track) h.lost = false;
-      } else { n.g.on = (n.g.on || 0) + dt; game.score += 90 * dt * mult(); }
+        if (h.track && bowing) { h.off = 0; n.g.on = (n.g.on || 0) + dt; game.score += 140 * dt * mult() * game.bowLvl; }
+        else if (!h.track) {
+          h.off = (h.off || 0) + dt;
+          if (h.off > 0.25 && !h.lost) { h.lost = true; game.combo = 0; popup('Sigue la curva', '#ff5c8a', Math.max(0, Math.min(game.lanes.length - 1, Math.round(fpos)))); }
+        }
+      } else if (!h.voice.level || bowing) { n.g.on = (n.g.on || 0) + dt; game.score += 90 * dt * mult(); }
     }
+    // aviso si tienes la nota puesta pero no estás pasando el arco
+    if (game.bowNeed && anyCello && !bowing) {
+      game.noBow += dt;
+      if (game.noBow > 0.45) { game.noBow = -1.2; popup('Frota el arco', '#ffb547', game.lanes.length / 2 - 0.5); }
+    } else if (game.noBow > 0) game.noBow = 0; else game.noBow = Math.min(0, game.noBow + dt);
   }
   // fin de la canción
   if (!running && !game.done && !game.paused && !counting()) finishGame();
@@ -2912,6 +3095,11 @@ function gameUpdate() {
   document.getElementById('gProg').style.width = Math.min(100, songTime / end * 100).toFixed(1) + '%';
 }
 
+function starPath(x, y, r, k) {
+  g.beginPath();
+  for (let i = 0; i < k * 2; i++) { const a = -Math.PI / 2 + i * Math.PI / k, rr = i % 2 ? r * 0.55 : r; i ? g.lineTo(x + Math.cos(a) * rr, y + Math.sin(a) * rr) : g.moveTo(x + Math.cos(a) * rr, y + Math.sin(a) * rr); }
+  g.closePath();
+}
 function drawGame() {
   const px = W * PLAYHEAD, L = LAYERS[game.layer], lh = game.lh, n = game.lanes.length, drums = isDrum(game.layer);
   g.fillStyle = '#0b0d17'; g.fillRect(0, 0, W, H);
@@ -2920,6 +3108,17 @@ function drawGame() {
     g.fillStyle = i % 2 ? 'rgba(255,255,255,0.035)' : 'rgba(255,255,255,0.015)';
     g.fillRect(0, game.top + i * lh, W, lh);
     if (game.flash[i] > 0.02) { g.globalAlpha = game.flash[i] * 0.22; g.fillStyle = L.color; g.fillRect(0, game.top + i * lh, W, lh); g.globalAlpha = 1; }
+  }
+  // zona del arco (cello)
+  if (game.bowNeed) {
+    const bx = game.bowX;
+    g.fillStyle = L.color; g.globalAlpha = 0.05 + 0.16 * game.bowLvl; g.fillRect(bx, 0, W - bx, H); g.globalAlpha = 1;
+    g.strokeStyle = 'rgba(255,255,255,0.18)'; g.lineWidth = 1; g.setLineDash([6, 6]);
+    g.beginPath(); g.moveTo(bx + 0.5, 0); g.lineTo(bx + 0.5, H); g.stroke(); g.setLineDash([]);
+    g.fillStyle = L.color; g.fillRect(W - 6, H * (1 - game.bowLvl), 6, H * game.bowLvl);
+    g.textAlign = 'center'; g.fillStyle = 'rgba(232,234,246,0.55)'; g.font = '700 13px -apple-system, system-ui, sans-serif';
+    g.fillText('ARCO', (bx + W) / 2, H - 34); g.font = '500 11px -apple-system, system-ui, sans-serif';
+    g.fillText('frota ← →', (bx + W) / 2, H - 18); g.textAlign = 'left';
   }
   // líneas de pulso
   g.fillStyle = 'rgba(255,255,255,0.05)';
@@ -2940,8 +3139,25 @@ function drawGame() {
     if (pressed.has(i) || game.flash[i] > 0.3) { g.globalAlpha = 0.3; g.fillStyle = L.color; g.fill(); }
     g.globalAlpha = 1;
   }
-  // notas
   const gemR = Math.min(16, lh * 0.28);
+  // acordes: las notas que caen juntas van unidas por una línea, para tocarlas con varios dedos
+  if (!drums) {
+    g.strokeStyle = 'rgba(255,255,255,0.35)'; g.lineWidth = 4; g.lineCap = 'round';
+    for (let i = 0; i < game.pn.length; i++) {
+      const a = game.pn[i]; let k = i;
+      while (k + 1 < game.pn.length && Math.abs(game.pn[k + 1].pts[0].t - a.pts[0].t) < 0.012) k++;
+      if (k > i && !a.g.j) {
+        const x = xOf(a.pts[0].t);
+        if (x > -20 && x < W + 20) {
+          const ls = game.pn.slice(i, k + 1).map(laneOfNote);
+          g.beginPath(); g.moveTo(x, laneY(Math.min(...ls))); g.lineTo(x, laneY(Math.max(...ls))); g.stroke();
+        }
+      }
+      i = k;
+    }
+    g.lineCap = 'butt';
+  }
+  // notas
   for (const nt of game.pn) {
     const s = nt.pts[0].t, xs = xOf(s), xe = xOf(nt.end);
     if (xe < -30 || xs > W + 30) continue;
@@ -2949,6 +3165,30 @@ function drawGame() {
     const hh = [...game.holds.values()].find(h => h.n === nt), held = !!hh && hh.track !== false;
     const col = j === 'm' || nt.g.cut ? '#3a3f5c' : held ? L.glow : hh ? '#7a6a8c' : L.color;
     if (nt.hit) { if (!hit) { g.fillStyle = col; g.globalAlpha = j === 'm' ? 0.5 : 1; drumShape(nt.pts[0].b, xs, y, gemR * 0.95); g.globalAlpha = 1; } continue; }
+    if (nt.kind === 'pluck') {
+      // bajo: la barra es lo que vibra la nota; al final, la marca de cómo silenciarla
+      const ringing = !!nt.g.voice;
+      g.strokeStyle = j === 'm' ? '#3a3f5c' : ringing ? L.glow : L.color;
+      g.globalAlpha = ringing ? 1 : 0.6; g.lineWidth = Math.max(5, lh * 0.1); g.lineCap = 'round';
+      if (ringing) { g.shadowColor = L.color; g.shadowBlur = 12; }
+      const bx0 = hit ? Math.max(xs, px) : xs;
+      if (xe > bx0) { g.beginPath(); g.moveTo(bx0, y); g.lineTo(xe, y); g.stroke(); }
+      g.shadowBlur = 0; g.globalAlpha = 1; g.lineCap = 'butt';
+      if (nt.mute && !nt.mute.done && j !== 'm') {
+        g.strokeStyle = '#e0d4ff'; g.fillStyle = '#e0d4ff'; g.lineWidth = 3;
+        if (nt.mute.fade < 0.06) { g.fillRect(xe - 3, y - gemR, 6, gemR * 2); }
+        else {
+          const xm = xOf(nt.mute.t), r = gemR * 0.65;
+          g.beginPath(); g.arc(xm, y, r, 0, Math.PI * 2); g.stroke();
+          g.globalAlpha = 0.55; g.beginPath(); g.moveTo(xm, y - r); g.lineTo(xe, y - 2); g.lineTo(xe, y + 2); g.lineTo(xm, y + r); g.closePath(); g.fill(); g.globalAlpha = 1;
+        }
+      }
+      if (!hit && !nt.g.pending) {
+        if (nt.needSlap) { g.fillStyle = '#ffd65c'; starPath(xs, y, gemR * 1.35, 7); g.fill(); }
+        g.fillStyle = col; g.beginPath(); g.arc(xs, y, gemR * (nt.needSlap ? 0.75 : 1), 0, Math.PI * 2); g.fill();
+      }
+      continue;
+    }
     if (nt.kind === 'tap') {
       if (hit) continue;
       g.fillStyle = col; g.beginPath(); g.roundRect ? g.roundRect(xs - 7, y - gemR, 14 + Math.max(0, xe - xs - 14) * 0.25, gemR * 2, 7) : g.rect(xs - 7, y - gemR, 14, gemR * 2); g.fill();
@@ -2958,7 +3198,7 @@ function drawGame() {
     const a = hit && !nt.g.cut ? Math.max(xs, px) : xs;
     g.strokeStyle = col; g.lineWidth = Math.max(8, lh * 0.2); g.lineCap = 'round';
     g.globalAlpha = held ? 1 : 0.85;
-    if (held) { g.shadowColor = L.color; g.shadowBlur = 16; }
+    if (held) { g.shadowColor = L.color; g.shadowBlur = 16 * (game.bowNeed ? game.bowLvl : 1); }
     g.beginPath();
     for (let x = a; x <= xe; x += 3) {
       const yy = nt.kind === 'slide' ? laneY(0) + lanePos(freeAt(nt, s + (x - xs) / PPS)) * lh : y;
@@ -3000,8 +3240,7 @@ function drawGame() {
 
 function finishGame() {
   game.done = true;
-  for (const h of game.holds.values()) h.voice.stop();
-  game.holds.clear();
+  silenceAll();
   const total = game.pn.length || 1, c = game.counts;
   // las notas largas cuentan según cuánto las sostuviste o seguiste
   const acc = game.pn.reduce((a, n) => a + (n.g.j ? JUDGE[n.g.j].w * trackOf(n) : 0), 0) / total;
@@ -3127,7 +3366,7 @@ const pickSong = openPick;
 const b64u = bytes => { let s = ''; for (let i = 0; i < bytes.length; i += 32768) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 32768)); return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''); };
 const unb64u = s => { const bin = atob(s.replace(/-/g, '+').replace(/_/g, '/')); const u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); return u; };
 async function encodeLevel(lv) {
-  const data = { v: 1, t: lv.title, s: lv.scale, n: lv.notes.filter(n => !LAYERS[n.layer].voice).map(n => [n.layer, +n.end.toFixed(3), n.hit ? 1 : 0, ...n.pts.flatMap(p => [+p.t.toFixed(3), +p.b.toFixed(2)])]) };
+  const data = { v: 1, t: lv.title, s: lv.scale, n: lv.notes.filter(n => !LAYERS[n.layer].voice).map(n => [n.layer, +n.end.toFixed(3), (n.hit ? 1 : 0) | (n.slap ? 2 : 0) | (Math.round((n.fade || 0) * 100) << 2), ...n.pts.flatMap(p => [+p.t.toFixed(3), +p.b.toFixed(2)])]) };
   const json = new TextEncoder().encode(JSON.stringify(data));
   if (window.CompressionStream) {
     const z = new Uint8Array(await new Response(new Blob([json]).stream().pipeThrough(new CompressionStream('deflate-raw'))).arrayBuffer());
@@ -3139,7 +3378,7 @@ async function decodeLevel(code) {
   let bytes = unb64u(code.slice(1));
   if (code[0] === 'z') bytes = new Uint8Array(await new Response(new Blob([bytes]).stream().pipeThrough(new DecompressionStream('deflate-raw'))).arrayBuffer());
   const d = JSON.parse(new TextDecoder().decode(bytes));
-  const ns = d.n.map(a => { const pts = []; for (let i = 3; i < a.length; i += 2) pts.push({ t: a[i], b: a[i + 1] }); return { layer: a[0], end: a[1], hit: !!a[2], pts, rec: false }; })
+  const ns = d.n.map(a => { const pts = []; for (let i = 3; i < a.length; i += 2) pts.push({ t: a[i], b: a[i + 1] }); return { layer: a[0], end: a[1], hit: !!(a[2] & 1), slap: !!(a[2] & 2), fade: (a[2] >> 2) / 100, pts, rec: false }; })
     .filter(n => LAYERS[n.layer] && n.pts.length);
   return { id: 'reto', title: String(d.t || 'Reto').slice(0, 40), credit: 'Hecha por un amigo en NoteTouch', scale: Array.isArray(d.s) && d.s.length === NB ? d.s.map(Number) : PENTA, notes: ns };
 }
@@ -3173,7 +3412,7 @@ $('pickDiff').onclick = e => { const b = e.target.closest('button'); if (!b) ret
 $('calMinus').onclick = () => { store('nt-calib', String(Math.max(-200, (+store('nt-calib') || 0) - 10))); $('calVal').textContent = store('nt-calib') + ' ms'; };
 $('calPlus').onclick = () => { store('nt-calib', String(Math.min(200, (+store('nt-calib') || 0) + 10))); $('calVal').textContent = store('nt-calib') + ' ms'; };
 $('pickGo').onclick = () => { if (pickLv && pickLayer != null) { clearTimeout(previewTimer); $('pickSheet').hidden = true; enterGame(pickLv, pickLayer, pickDiff); } };
-$('gQuit').onclick = () => { if (running) stopRun(); for (const h of game.holds.values()) h.voice.stop(); game.holds.clear(); game.paused = true; $('gpause').hidden = false; };
+$('gQuit').onclick = () => { if (running) stopRun(); silenceAll(); game.paused = true; $('gpause').hidden = false; };
 $('gpResume').onclick = () => { $('gpause').hidden = true; game.paused = false; startRun('play', true); };
 $('gpRestart').onclick = () => { const { lv, layer, diff } = game; $('gpause').hidden = true; enterGame(lv, layer, diff); };
 $('gpExit').onclick = () => { $('gpause').hidden = true; const lv = game.lv; exitGame(); openSongs(lv); };

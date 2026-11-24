@@ -1,5 +1,12 @@
 # Versiones de NoteTouch
 
+## v0.4.0 — cada instrumento con su personalidad (24 de noviembre de 2026)
+
+- Bajo: pulsas y la nota vibra sola; con un jalón rápido al tocar sale el slap (más fuerte cuanto más rápido). Cuando viene un silencio, se calla tocando la barra: corte seco o apagado suave. Sonido más lleno en el parlante del celular.
+- Piano: acordes de tres notas para tocar con varios dedos (unidos por una línea) y corridas rápidas.
+- Cello: lleva la melodía. Una mano sigue la curva y la otra frota el arco a la derecha; la velocidad del arco es la intensidad. Doble cuerda al cerrar frases. En Fácil el arco va solo.
+- Ievan Polkka y El rey de la montaña rearregladas con estos papeles.
+
 ## v0.3.0 — canciones de internet y carrusel (23 de noviembre de 2026)
 
 - Nuevas canciones, virales y de dominio público: Wellerman (el shanty de TikTok), Ievan Polkka (la del puerro que gira) y El rey de la montaña de Grieg, que se acelera en cada vuelta.
