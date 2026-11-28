@@ -352,7 +352,7 @@
   <div class="dot"></div>
   <h1>Toca para empezar</h1>
   <p>Toca una franja para sonar una nota, mantén para alargarla y desliza para cambiar de nota.<br><br><strong>En iPhone:</strong> revisa que el interruptor de silencio esté apagado.</p>
-  <small style="color:var(--dim);opacity:.6;font-size:10px;position:absolute;bottom:calc(14px + env(safe-area-inset-bottom))">v20 · Cello y bajo: FluidR3 GM · Piano: Salamander Grand Piano (A. Holm) · CC BY 3.0</small>
+  <small style="color:var(--dim);opacity:.6;font-size:10px;position:absolute;bottom:calc(14px + env(safe-area-inset-bottom))">v21 · Cello y bajo: FluidR3 GM · Piano: Salamander Grand Piano (A. Holm) · CC BY 3.0</small>
 </div>
 
 <script>
@@ -950,6 +950,7 @@ function stopRun() {
   if (rec) finishRecording();
   songTime = now();
   for (const [id] of live) endTouch(id);
+  for (const r of [...rings.values()]) finishRing(r, Math.min(songTime, r.note.pts[0].t + RING_S), 0, true);
   running = false; mode = null;
   songTime = Math.max(0, songTime);
   stopPlaying(); updatePlayIcon();
@@ -1184,7 +1185,13 @@ function keyUp(id) {
 }
 
 // ---------- Historial (Deshacer) ----------
-const snapshot = () => JSON.stringify(notes.filter(n => !n.rec).map(({ layer, pts, end, hit }) => ({ layer, pts, end, hit })));
+const snapshot = () => JSON.stringify(notes.filter(n => !n.rec).map(({ layer, pts, end, hit, slap, vel, fade, bow }) => {
+  const o = { layer, pts, end, hit };
+  if (slap) { o.slap = true; o.vel = vel; }
+  if (fade) o.fade = fade;
+  if (bow) o.bow = bow;
+  return o;
+}));
 function pushHistory() { history.push({ n: snapshot(), c: clips.slice() }); if (history.length > 100) history.shift(); }
 
 // ---------- Edición en pausa ----------
@@ -1280,7 +1287,15 @@ stage.addEventListener('pointerdown', e => {
     if (sel) { sel = null; scrolls.set(e.pointerId, { x0: e.clientX, t0: songTime }); return; }
   }
   sel = null;
-  if (running) { startNote(e.pointerId, localY(e)); return; }
+  downAt.set(e.pointerId, { x: e.clientX, y: localY(e), t: performance.now() });
+  if (running) {
+    const x = e.clientX - stage.getBoundingClientRect().left;
+    // cello: a la derecha está el arco (frotar de lado a lado da la intensidad)
+    if (isFree(cur) && x > W * BOW_X) { cbow = { id: e.pointerId, x }; return; }
+    // bajo: tocar la barra de una nota que sigue vibrando la silencia
+    if (LAYERS[cur].id === 'bass') { const r = ringAt(x, localY(e)); if (r) { muteStart(e.pointerId, r); return; } }
+    startNote(e.pointerId, localY(e)); return;
+  }
   // En pausa espera un instante: si el dedo se va de lado es arrastrar el tiempo, si no, es una nota
   const pd = { x0: e.clientX, y0: localY(e), y: localY(e) };
   pd.timer = setTimeout(() => { pending.delete(e.pointerId); startNote(e.pointerId, pd.y); }, PAUSE_WAIT);
@@ -1303,14 +1318,21 @@ function startNote(id, y) {
     updateButtons();
     return;
   }
+  const bass = LAYERS[cur].id === 'bass';
+  // bajo: una nota nueva apaga la que venía vibrando, como en un bajo de verdad
+  if (bass) for (const r of [...rings.values()]) finishRing(r, now(), 0);
   const note = { layer: cur, pts: [{ t: Math.max(0, snapT(now())), b }], end: null, rec: true };
   notes.push(note);
-  live.set(id, { note, voice: makeVoice(cur, midiOf(b, cur)), b, b0: b, y0: y, lastY: y, anchor: b, fb: b, movedAt: performance.now(), hist: [], lastNote: b });
+  const d = downAt.get(id) || { x: 0, y, t: performance.now() };
+  live.set(id, { note, voice: makeVoice(cur, midiOf(b, cur), bass ? { ring: true, vel: 0.45 } : undefined), b, b0: b, y0: y, lastY: y, anchor: b, fb: b, movedAt: performance.now(), hist: [], lastNote: b,
+    bass, down: d, slapWin: bass, locked: false, bowUsed: false });
   updateButtons();
 }
 
 stage.addEventListener('pointermove', e => {
   if (game.active) { gameMove(e); return; }
+  if (cbow && cbow.id === e.pointerId) { const x = e.clientX - stage.getBoundingClientRect().left; cbowAcc += Math.abs(x - cbow.x); cbow.x = x; return; }
+  if (mutesC.has(e.pointerId)) return;
   if (voiceDrag.has(e.pointerId)) { voiceMove(e); return; }
   if (keys.has(e.pointerId)) { keyMove(e); return; }
   const ed = edits.get(e.pointerId);
@@ -1333,6 +1355,21 @@ stage.addEventListener('pointermove', e => {
   }
   const s = live.get(e.pointerId);
   if (!s) return;
+  if (s.bass) {
+    // bajo: si el toque arranca con un jalón rápido es slap (más fuerte cuanto más rápido); la nota no cambia
+    if (s.locked) return;
+    if (s.slapWin) {
+      const dt = performance.now() - s.down.t, dist = Math.hypot(e.clientX - s.down.x, localY(e) - s.down.y);
+      if (dt < SLAP_MS) {
+        if (dist > SLAP_PX) {
+          const v = Math.max(0.3, Math.min(1, dist / Math.max(dt, 8) / 1.5));
+          s.note.slap = true; s.note.vel = +v.toFixed(2); s.voice.slap(v); s.slapWin = false; s.locked = true;
+        }
+        return;
+      }
+      s.slapWin = false;
+    }
+  }
   if (isFree(s.note.layer)) {
     // el sonido sigue el dedo: posición relativa a donde tocaste, con zona afinada en cada nota
     s.lastY = localY(e);
@@ -1384,6 +1421,103 @@ function setFree(s, fb, r = fb) {
   s.voice.set(midiOf(fb, s.note.layer));
 }
 
+// ---------- Bajo y cello en Crear ----------
+const BOW_X = 0.62;            // en el cello, a la derecha de esta proporción del ancho está el arco
+const downAt = new Map();      // dónde y cuándo empezó cada toque (para detectar el slap)
+const rings = new Map();       // notas de bajo que siguen vibrando después de soltar
+const mutesC = new Map();      // toques que están silenciando una nota de bajo
+let cbow = null, cbowAcc = 0, cbowLvl = 0, cbowT = 0;
+function finishRing(r, tEnd, fade, quiet) {
+  const n = r.note;
+  rings.delete(n);
+  n.end = Math.max(tEnd, n.pts[0].t + MIN_NOTE);
+  if (fade > 0.06) n.fade = +fade.toFixed(3); else delete n.fade;
+  n.rec = false;
+  if (!quiet) r.voice.mute(fade > 0.06 ? 0.03 : 0.03); else r.voice.stop();
+  updateButtons(); scheduleSave();
+}
+function ringAt(x, y) {
+  const px = W * PLAYHEAD;
+  for (const r of rings.values()) {
+    const n = r.note, b = n.pts[n.pts.length - 1].b;
+    if (Math.abs(y - yOf(b, n.layer)) > bandH(n.layer) * 0.6) continue;
+    if (x >= xOf(n.pts[0].t) - 14 && x <= px + 24) return r;
+  }
+  return null;
+}
+// silenciar: un toque corto la corta en seco; si dejas el dedo, se va apagando hasta que lo levantas
+function muteStart(id, r) {
+  r.voice.mute(1.0);
+  mutesC.set(id, { r, t0: now(), ms: performance.now() });
+}
+function createUp(id) {
+  downAt.delete(id);
+  if (cbow && cbow.id === id) { cbow = null; return; }
+  const m = mutesC.get(id);
+  if (!m) return;
+  mutesC.delete(id);
+  if (!rings.has(m.r.note)) return;
+  const held = (performance.now() - m.ms) / 1000;
+  finishRing(m.r, held < 0.12 ? m.t0 : now(), held < 0.12 ? 0 : now() - m.t0);
+}
+// cada cuadro: notas de bajo que se apagaron solas y nivel del arco del cello
+function createTick(dt) {
+  for (const r of [...rings.values()]) if (running && now() - r.note.pts[0].t >= RING_S) finishRing(r, r.note.pts[0].t + RING_S, 0, true);
+  const target = cbow ? Math.min(1, cbowAcc / Math.max(dt, 0.008) / 450) : 0;
+  cbowAcc = 0;
+  cbowLvl += (target - cbowLvl) * Math.min(1, dt / (target > cbowLvl ? 0.04 : 0.22));
+  for (const s of live.values()) {
+    if (!isFree(s.note.layer)) continue;
+    // si nunca usaste el arco en esta nota suena entera; desde que lo usas, manda el arco
+    if (cbow) s.bowUsed = true;
+    if (!s.bowUsed) continue;
+    const lv = +cbowLvl.toFixed(2), bw = s.note.bow || (s.note.bow = []), t = +now().toFixed(3), last = bw[bw.length - 1];
+    if (!last || (Math.abs(last[1] - lv) > 0.03 && t - last[0] > 0.03) || t - last[0] > 0.15) bw.push([t, lv]);
+    if (s.voice.level) s.voice.level(cbowLvl);
+  }
+}
+// intensidad grabada del arco en un instante
+function bowAt(n, t) {
+  const bw = n.bow;
+  if (!bw || !bw.length) return 1;
+  if (t <= bw[0][0]) return bw[0][1];
+  for (let i = 1; i < bw.length; i++) if (t < bw[i][0]) { const [t0, v0] = bw[i - 1], [t1, v1] = bw[i]; return v0 + (v1 - v0) * (t - t0) / Math.max(1e-3, t1 - t0); }
+  return bw[bw.length - 1][1];
+}
+// marcas en Crear: estrella del slap, cola del apagado suave, zona del arco del cello
+function starAt(x, y, r) {
+  g.beginPath();
+  for (let i = 0; i < 14; i++) { const a = -Math.PI / 2 + i * Math.PI / 7, rr = i % 2 ? r * 0.55 : r; i ? g.lineTo(x + Math.cos(a) * rr, y + Math.sin(a) * rr) : g.moveTo(x + Math.cos(a) * rr, y + Math.sin(a) * rr); }
+  g.closePath();
+}
+function drawCreateMarks() {
+  if (game.active || game.preview) return;
+  const L = LAYERS[cur];
+  if (L.id === 'bass') {
+    for (const n of notes) {
+      if (n.layer !== cur) continue;
+      const xs = xOf(n.pts[0].t), end = n.rec ? songTime : n.end, xe = xOf(end);
+      if (xe < -20 || xs > W + 20) continue;
+      const y = yOf(n.pts[0].b, n.layer), r = Math.min(12, bandH(n.layer) * 0.32);
+      if (n.slap) { g.fillStyle = '#ffd65c'; starAt(xs, y, r * 1.25); g.fill(); }
+      if (n.fade && !n.rec) {
+        const xf = xOf(n.end - n.fade);
+        g.fillStyle = '#e0d4ff'; g.globalAlpha = 0.7;
+        g.beginPath(); g.moveTo(xf, y - r * 0.6); g.lineTo(xe, y); g.lineTo(xf, y + r * 0.6); g.closePath(); g.fill(); g.globalAlpha = 1;
+      }
+    }
+  }
+  if (isFree(cur)) {
+    const bx = W * BOW_X;
+    g.fillStyle = L.color; g.globalAlpha = 0.03 + 0.14 * cbowLvl; g.fillRect(bx, 0, W - bx, H); g.globalAlpha = 1;
+    g.strokeStyle = 'rgba(255,255,255,0.14)'; g.lineWidth = 1; g.setLineDash([6, 6]);
+    g.beginPath(); g.moveTo(bx + 0.5, 0); g.lineTo(bx + 0.5, H); g.stroke(); g.setLineDash([]);
+    if (cbowLvl > 0.01) { g.fillStyle = L.color; g.fillRect(W - 5, H * (1 - cbowLvl), 5, H * cbowLvl); }
+    g.textAlign = 'center'; g.fillStyle = 'rgba(232,234,246,0.4)'; g.font = '600 11px -apple-system, system-ui, sans-serif';
+    g.fillText(running ? 'ARCO · frota ← →' : 'ARCO', (bx + W) / 2, H - 14); g.textAlign = 'left';
+  }
+}
+
 function scrollTo(t) {
   atEnd = false;
   songTime = Math.max(0, Math.min(t, songEnd() + (W * (1 - PLAYHEAD)) / PPS));
@@ -1391,6 +1525,14 @@ function scrollTo(t) {
 function endTouch(id) {
   const s = live.get(id);
   if (!s) return;
+  if (s.bass) {
+    // al soltar, la nota de bajo sigue vibrando sola hasta que la silencies, toques otra o se apague
+    live.delete(id);
+    rings.set(s.note, { note: s.note, voice: s.voice });
+    if (ac) lastRelease = ac.currentTime;
+    updateButtons();
+    return;
+  }
   const t = now(), start = s.note.pts[0].t;
   const lastPt = s.note.pts[s.note.pts.length - 1].t;
   s.note.end = Math.max(snapT(t), start + MIN_NOTE, lastPt + 0.01);
@@ -1398,6 +1540,7 @@ function endTouch(id) {
   if (s.note.end > t) s.note.heldUntil = s.note.end;
   s.note.rec = false;
   if (isFree(s.note.layer)) s.note.pts = denoisePath(s.note.pts, s.note.end);
+  if (s.bowUsed && s.note.bow) { s.note.bow.push([+s.note.end.toFixed(3), s.note.bow[s.note.bow.length - 1][1]]); } else delete s.note.bow;
   s.voice.stop();
   live.delete(id);
   if (ac) lastRelease = ac.currentTime;
@@ -1409,8 +1552,8 @@ function flushPending(id) {
   clearTimeout(pd.timer); pending.delete(id);
   startNote(id, pd.y0); // toque rápido sin arrastrar: nota corta
 }
-stage.addEventListener('pointerup', e => { if (game.active) { gameUp(e.pointerId); return; } keyUp(e.pointerId); voiceUp(e.pointerId); flushPending(e.pointerId); scrolls.delete(e.pointerId); endEdit(e.pointerId); endTouch(e.pointerId); });
-stage.addEventListener('pointercancel', e => { if (game.active) { gameUp(e.pointerId); return; } keyUp(e.pointerId); voiceUp(e.pointerId); const pd = pending.get(e.pointerId); if (pd) { clearTimeout(pd.timer); pending.delete(e.pointerId); } scrolls.delete(e.pointerId); endEdit(e.pointerId); endTouch(e.pointerId); });
+stage.addEventListener('pointerup', e => { if (game.active) { gameUp(e.pointerId); return; } createUp(e.pointerId); keyUp(e.pointerId); voiceUp(e.pointerId); flushPending(e.pointerId); scrolls.delete(e.pointerId); endEdit(e.pointerId); endTouch(e.pointerId); });
+stage.addEventListener('pointercancel', e => { if (game.active) { gameUp(e.pointerId); return; } createUp(e.pointerId); keyUp(e.pointerId); voiceUp(e.pointerId); const pd = pending.get(e.pointerId); if (pd) { clearTimeout(pd.timer); pending.delete(e.pointerId); } scrolls.delete(e.pointerId); endEdit(e.pointerId); endTouch(e.pointerId); });
 document.addEventListener('touchmove', e => { if (!(e.target.closest && e.target.closest('#carousel, .sheet'))) e.preventDefault(); }, { passive: false });
 
 // ---------- Botones ----------
@@ -1507,8 +1650,16 @@ function playStep() {
     const v = playing.get(n);
     if (active) {
       const b = isFree(n.layer) ? freeAt(n, songTime) : bandAt(n, songTime);
-      if (!v) playing.set(n, { voice: makeVoice(n.layer, midiOf(b, n.layer)), b });
+      const bassN = LAYERS[n.layer].id === 'bass';
+      if (!v) {
+        const voice = makeVoice(n.layer, midiOf(b, n.layer), bassN ? { ring: true, vel: n.slap ? n.vel || 0.7 : 0.45 } : undefined);
+        if (bassN && n.slap && voice.slap) voice.slap(n.vel || 0.7);
+        playing.set(n, { voice, b });
+      }
       else if (Math.abs(v.b - b) > 0.003) { v.voice.set(midiOf(b, n.layer)); v.b = b; }
+      const pv = playing.get(n);
+      if (n.bow && pv.voice.level) pv.voice.level(bowAt(n, songTime));
+      if (bassN && n.fade && !pv.muting && songTime >= n.end - n.fade && pv.voice.mute) { pv.muting = true; pv.voice.mute(1.0); }
     } else if (v) { v.voice.stop(); playing.delete(n); }
   }
   if (!counting()) scheduleClips();
@@ -1557,8 +1708,9 @@ function tick() {
   }
   if (sel !== lastSel) { lastSel = sel; updateButtons(); }
   previewTick();
+  { const tn = performance.now(); createTick(Math.min(0.05, (tn - cbowT) / 1000)); cbowT = tn; }
   if (game.active) { gameUpdate(); drawGame(); }
-  else { checkLoop(); draw(); drawMini(); }
+  else { checkLoop(); draw(); drawCreateMarks(); drawMini(); }
   videoTick();
   animateLayers();
   const s = Math.max(0, Math.floor(songTime));
@@ -2177,7 +2329,7 @@ function scheduleSave() {
 }
 async function saveSong() {
   if (game.save) return; // lo que suena en el juego no es tu canción; al salir se guarda
-  if (rec || live.size) { scheduleSave(); return; } // espera a que termine de grabar o tocar
+  if (rec || live.size || rings.size) { scheduleSave(); return; } // espera a que termine de grabar o tocar
   try {
     const ids = new Map(), buffers = {};
     for (const c of clips) if (!ids.has(c.buf)) {

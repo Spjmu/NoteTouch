@@ -1,5 +1,10 @@
 # Versiones de NoteTouch
 
+## v0.5.0 — bajo y cello nuevos también en Crear (27 de noviembre de 2026)
+
+- Bajo en Crear: la nota vibra sola al soltar; con un jalón rápido al tocar sale el slap; tocar su barra la silencia (toque corto = corte seco, dejar el dedo = apagado suave). Todo queda grabado y suena igual al reproducir y al jugar la canción.
+- Cello en Crear: zona del arco a la derecha; si frotas mientras tocas, la intensidad del arco queda grabada. Sin arco, la nota suena entera.
+
 ## v0.4.0 — cada instrumento con su personalidad (24 de noviembre de 2026)
 
 - Bajo: pulsas y la nota vibra sola; con un jalón rápido al tocar sale el slap (más fuerte cuanto más rápido). Cuando viene un silencio, se calla tocando la barra: corte seco o apagado suave. Sonido más lleno en el parlante del celular.
